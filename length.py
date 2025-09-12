@@ -2,7 +2,6 @@ import numpy as np
 import cv2
 import os
 from segmentation_models_pytorch import Unet
-import tensorflow as tf
 import torch
 import os
 import numpy as np
@@ -356,30 +355,6 @@ def apply_mask2(original_image, mask):
 
 
     return masked_image
-
-@tf.keras.utils.register_keras_serializable()
-class F1Score(tf.keras.metrics.Metric):
-    def __init__(self, name='f1_score', **kwargs):
-        super(F1Score, self).__init__(name=name, **kwargs)
-        self.precision = tf.keras.metrics.Precision()
-        self.recall = tf.keras.metrics.Recall()
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred = tf.round(y_pred)
-        self.precision.update_state(y_true, y_pred, sample_weight)
-        self.recall.update_state(y_true, y_pred, sample_weight)
-
-    def result(self):
-        p = self.precision.result()
-        r = self.recall.result()
-        return 2 * ((p * r) / (p + r + tf.keras.backend.epsilon()))
-
-    def reset_states(self):
-        self.precision.reset_states()
-        self.recall.reset_states()
-
-# Instantiate the custom F1 metric
-f1 = F1Score()
 
 def classification_curvature(image, mask, model, use_threshold, threshold):
     
