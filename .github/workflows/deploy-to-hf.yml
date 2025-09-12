@@ -1,0 +1,46 @@
+name: Deploy to Hugging Face Space
+
+on:
+  push:
+    branches: [ main ]   # or your default branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout GitHub repo
+        uses: actions/checkout@v4
+
+      - name: Set up git user
+        run: |
+          git config --global user.email "actions@github.com"
+          git config --global user.name  "GitHub Actions"
+
+      - name: Clone Space repo
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          SPACE_URL="https://huggingface.co/spaces/markdanielarndt/Zebrafish"
+          git lfs install
+          git clone "https://user:${HF_TOKEN}@${SPACE_URL#https://}" space_repo
+
+      - name: Sync files into Space repo
+        run: |
+          rsync -av --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "__pycache__" \
+            ./ space_repo/
+
+      - name: Commit & push to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          cd space_repo
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to deploy."
+          else
+            git commit -m "Deploy from GitHub: $GITHUB_SHA"
+            git push origin HEAD
+          fi
