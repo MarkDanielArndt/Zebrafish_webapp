@@ -25,32 +25,25 @@ def _ensure_model():
     return MODEL
 
 def _to_numpy(img):
-    """Robustly convert PIL/NumPy/torch to NumPy uint8 RGB/gray."""
     if img is None:
         return None
-    # torch tensor: (C,H,W) or (H,W) or (H,W,C), float 0..1 or others
     if _HAS_TORCH and isinstance(img, torch.Tensor):
         img = img.detach().cpu().numpy()
-    # PIL image
     if isinstance(img, PILImage.Image):
         img = np.array(img)
     img = np.asarray(img)
 
-    # squeeze singleton dims
     while img.ndim > 2 and img.shape[0] in (1,3) and img.shape[-1] not in (1,3):
-        # likely CHW -> move to HWC
         if img.ndim == 3:
             img = np.transpose(img, (1,2,0))
         else:
             break
 
-    # normalize dtype/range to uint8 0..255
     if img.dtype != np.uint8:
         img_min, img_max = float(img.min()), float(img.max()) if img.size else (0.0,1.0)
         if img_max <= 1.0 and img_min >= 0.0:
             img = (img * 255.0).clip(0,255).astype(np.uint8)
         else:
-            # scale to 0..255
             denom = (img_max - img_min) if (img_max - img_min) != 0 else 1.0
             img = ((img - img_min) / denom * 255.0).clip(0,255).astype(np.uint8)
     return img
@@ -132,9 +125,7 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_
 def _normalize_mask(mask: np.ndarray) -> np.ndarray:
     m = _to_numpy(mask).astype(np.float32)
     if m.ndim == 3 and m.shape[-1] == 3:
-        # if a 3ch mask slipped through, convert to gray
         m = m[...,0]
-    # Assume mask already approx 0..255 or 0..1
     if m.max() <= 1.0:
         m = (m > 0.5).astype(np.uint8) * 255
     else:
@@ -156,22 +147,32 @@ def _make_seg_overlay(original_img, seg_mask) -> np.ndarray:
     if base.ndim == 2:
         base = np.stack([base]*3, axis=-1)
 
-    # Ensure same size
     if mask.shape[:2] != base.shape[:2]:
         mask = np.array(PILImage.fromarray(mask).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
 
-    # Alpha blend red on mask
     overlay = base.copy().astype(np.float32)
     alpha = 0.4
     red = np.zeros_like(overlay)
-    red[..., 0] = 255  # R channel
+    red[..., 0] = 255
     m = (mask > 0)[..., None].astype(np.float32)
     overlay = overlay * (1 - alpha * m) + red * (alpha * m)
     overlay = overlay.clip(0,255).astype(np.uint8)
     return _resize_max(overlay)
 
+def _shorten_name(name: str, max_chars: int = 22) -> str:
+    """Shorten long filenames with middle ellipsis, keep extension."""
+    base = os.path.basename(name)
+    if len(base) <= max_chars:
+        return base
+    root, ext = os.path.splitext(base)
+    keep = max_chars - len(ext) - 3  # 3 for '...'
+    if keep <= 0:
+        return base[:max(1, max_chars-3)] + '...'
+    head = keep // 2
+    tail = keep - head
+    return f"{root[:head]}...{root[-tail:]}{ext}"
+
 def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, list]:
-    # Handle both folder (may be str or list[str]) and files.
     folder_path = None
     if folder_input:
         if isinstance(folder_input, (list, tuple)):
@@ -218,14 +219,13 @@ def process(folder, files: Optional[List[gr.File]], process_curvature=True, proc
             except Exception:
                 pass
 
-        # Collect at most 5 preview overlays to save space
         if len(previews) < 5:
             try:
                 overlay = _make_seg_overlay(original_images[i], seg_mask)
-                cap = filenames[i] if i < len(filenames) else f"image_{i}"
+                original_name = filenames[i] if i < len(filenames) else f"image_{i}"
+                cap = _shorten_name(original_name, max_chars=22)
                 previews.append([overlay, cap])
             except Exception:
-                # skip preview if anything fails
                 pass
 
     # Boxplots
@@ -239,12 +239,14 @@ def process(folder, files: Optional[List[gr.File]], process_curvature=True, proc
     with open(out_xlsx, "wb") as f:
         f.write(out_bytes.getvalue())
 
-    # Note if there are more images than shown
+    # Filenames summary (first 5 shortened)
+    shown_names = [ _shorten_name(n, max_chars=22) for n in filenames[:5] ]
     more_note = ""
     if len(segmented_images) > 5:
-        more_note = f"... and {len(segmented_images) - 5} more"
+        more_note = f"… and {len(segmented_images) - 5} more"
+    filenames_md = "**Files:** " + ",  ".join(shown_names) + ("  " + more_note if more_note else "")
 
-    return out_xlsx, boxplot_np, previews, more_note
+    return out_xlsx, boxplot_np, previews, filenames_md
 
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
@@ -266,8 +268,8 @@ with gr.Blocks() as demo:
             out_box = gr.Image(label="Box plots", type="numpy")
         with gr.Row():
             gallery = gr.Gallery(label="Example segmentations (first 5)", columns=5, height="auto")
-        more_note = gr.Markdown("")
+        filenames_list = gr.Markdown("")
 
-    run.click(fn=process, inputs=[folder, files, chk_curv, chk_len, chk_thr, thr_val], outputs=[out_file, out_box, gallery, more_note])
+    run.click(fn=process, inputs=[folder, files, chk_curv, chk_len, chk_thr, thr_val], outputs=[out_file, out_box, gallery, filenames_list])
 
 demo.launch()
