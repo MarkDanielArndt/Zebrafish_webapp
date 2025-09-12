@@ -16,6 +16,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from collections import OrderedDict
 import torch.nn.functional as F
 import torchvision.transforms as T
+from huggingface_hub import hf_hub_download
 
 def normalize_images(data):
         # Check if data contains np.arrays, if yes, directly normalize them
@@ -414,12 +415,11 @@ class FishClassifier(nn.Module):
         return x
 
 def load_model(cnn_log_directory="Models/CNN", cnn_model_name="ResNet50x1/0006.keras"):
-    model_path = os.path.join(cnn_log_directory, cnn_model_name)
-    # Path to saved model
-    model_path = "runs/f1_based_dropout/best_model_class.pth"
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"{model_path} not found in working directory.")
-
+    
+    model_path = hf_hub_download(
+        repo_id="markdanielarndt/Classification",
+        filename="best_model_class.pth"
+    )
 
     fallback = {'dense_layer': 512, 'dropout': 0.2, 'model_name': 'convnext_base'}
     print("Warning: best_params not found. Using fallback params:", fallback)
