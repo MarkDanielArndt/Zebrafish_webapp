@@ -1,0 +1,12 @@
+gradio>=4.0
+torch>=2.1
+torchvision>=0.16
+timm>=0.9
+segmentation-models-pytorch>=0.3
+opencv-python
+pillow
+numpy
+matplotlib
+openpyxl
+scikit-image
+scipy
