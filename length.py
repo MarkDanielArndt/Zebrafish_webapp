@@ -160,8 +160,8 @@ def get_fish_length(img, original_size = [256,256], initial_size = (4090, 5420) 
     return result_image, max_curve_length
 
 #HD
-Y_SCALE = 3923/256
-X_SCALE = 3923/256
+Y_SCALE = 5885/256
+X_SCALE = 5885/256
 
 #Dresden
 # Y_SCALE = 5420/256
