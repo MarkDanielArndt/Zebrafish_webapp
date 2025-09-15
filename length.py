@@ -159,11 +159,14 @@ def get_fish_length(img, original_size = [256,256], initial_size = (4090, 5420) 
 
     return result_image, max_curve_length
 
-#Y_SCALE = 3923/256
-#X_SCALE = 3923/256
+#HD
+Y_SCALE = 3923/256
+X_SCALE = 3923/256
 
-Y_SCALE = 5420/256
-X_SCALE = 4090/256
+#Dresden
+# Y_SCALE = 5420/256
+# X_SCALE = 4090/256
+
 
 
 def get_fish_length_circles_fixed(body_mask, circle_dia=15):
