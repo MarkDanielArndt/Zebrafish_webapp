@@ -277,7 +277,7 @@ with gr.Blocks() as demo:
     # --- New physical distance inputs (µm), placed just above Run button ---
     with gr.Row():
         phys_w_um = gr.Textbox(label="Physical horizontal distance (µm)", placeholder="dkfz E041: 5885, dresden: 5420")
-        phys_h_um = gr.Textbox(label="Physical vertical distance (µm)", placeholder="dkfz E041: 4090, dresden: 4090")
+        phys_h_um = gr.Textbox(label="Physical vertical distance (µm)", placeholder="dkfz E041: 5885, dresden: 4090")
 
     run = gr.Button("Run")
 
