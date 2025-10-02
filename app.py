@@ -146,27 +146,77 @@ def _shorten_name(name: str, max_chars: int = 22) -> str:
     return f"{root[:head]}...{root[-tail:]}{ext}"
 
 def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, list]:
-    folder_path = None
-    # Gradio's File component for folders returns a list of filepaths, get the common parent directory
-    if folder_input:
-        if isinstance(folder_input, (list, tuple)):
-            # If folder_input is a list of filepaths, get the parent directory
-            if len(folder_input) > 0 and isinstance(folder_input[0], str):
-                folder_path = os.path.dirname(folder_input[0])
-        elif isinstance(folder_input, str):
-            folder_path = folder_input
-    if folder_path and os.path.isdir(folder_path):
-        exts = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
-        names = [n for n in os.listdir(folder_path) if os.path.splitext(n)[1].lower() in exts]
+    """
+    Normalize inputs into a working directory with all images inside, and a
+    sorted list of filenames (basenames) that match what will be processed.
+    - If `folder_input` is a list/tuple of paths (Gradio folder upload), copy ALL
+      of them into a temp dir and return that dir + filenames.
+    - If `folder_input` is a string path to a directory, enumerate it.
+    - Otherwise, fall back to `files` (individual uploads) and copy into a temp dir.
+    """
+    exts = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
+
+    # Helper: extract plain file paths from a gradio payload item
+    def _get_path(x):
+        if isinstance(x, str):
+            return x
+        # Some gradio versions pass objects with `.name`
+        return getattr(x, "name", None)
+
+    # Case 1: Folder upload via list/tuple of paths
+    if isinstance(folder_input, (list, tuple)) and len(folder_input) > 0:
+        src_paths = []
+        for item in folder_input:
+            p = _get_path(item)
+            if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in exts:
+                src_paths.append(p)
+        if src_paths:
+            tmpdir = tempfile.mkdtemp()
+            basenames = []
+            for p in src_paths:
+                bn = os.path.basename(p)
+                dst = os.path.join(tmpdir, bn)
+                # If duplicate basenames (rare but possible), disambiguate
+                if os.path.exists(dst):
+                    root, ext = os.path.splitext(bn)
+                    k = 1
+                    while os.path.exists(dst):
+                        bn = f"{root}_{k}{ext}"
+                        dst = os.path.join(tmpdir, bn)
+                        k += 1
+                shutil.copy(p, dst)
+                basenames.append(bn)
+            basenames.sort()
+            return tmpdir, basenames
+
+    # Case 2: Folder upload as a single directory path (less common)
+    if isinstance(folder_input, str) and os.path.isdir(folder_input):
+        names = [n for n in os.listdir(folder_input)
+                 if os.path.splitext(n)[1].lower() in exts]
         names.sort()
-        return folder_path, names
-    tmpdir = tempfile.mkdtemp(); filenames = []
+        return folder_input, names
+
+    # Case 3: Individual files upload (UploadButton)
+    tmpdir = tempfile.mkdtemp()
+    filenames = []
     if files:
         for f in files:
-            dst = os.path.join(tmpdir, os.path.basename(f.name))
-            shutil.copy(f.name, dst)
-            filenames.append(os.path.basename(f.name))
+            p = _get_path(f)
+            if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in exts:
+                bn = os.path.basename(p)
+                dst = os.path.join(tmpdir, bn)
+                if os.path.exists(dst):
+                    root, ext = os.path.splitext(bn)
+                    k = 1
+                    while os.path.exists(dst):
+                        bn = f"{root}_{k}{ext}"
+                        dst = os.path.join(tmpdir, bn)
+                        k += 1
+                shutil.copy(p, dst)
+                filenames.append(bn)
+    filenames.sort()
     return tmpdir, filenames
+
 
 def _safe_float(s, default=None):
     try:
