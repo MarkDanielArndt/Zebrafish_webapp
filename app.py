@@ -37,7 +37,8 @@ def _to_numpy(img):
         else:
             break
     if img.dtype != np.uint8:
-        img_min, img_max = float(img.min()), float(img.max()) if img.size else (0.0,1.0)
+        img_min = float(img.min()) if img.size else 0.0
+        img_max = float(img.max()) if img.size else 1.0
         if img_max <= 1.0 and img_min >= 0.0:
             img = (img * 255.0).clip(0,255).astype(np.uint8)
         else:
@@ -47,10 +48,10 @@ def _to_numpy(img):
 
 def _make_boxplots_image(fish_lengths, curvatures):
     fig = plt.figure(figsize=(10,5))
-    plt.subplot(1,2,1); 
+    plt.subplot(1,2,1)
     if fish_lengths: plt.boxplot(fish_lengths, vert=True, patch_artist=True)
-    plt.title("Fish Lengths"); plt.ylabel("Length (units)")
-    plt.subplot(1,2,2);
+    plt.title("Fish Lengths"); plt.ylabel("Length (µm)")
+    plt.subplot(1,2,2)
     if curvatures: plt.boxplot(curvatures, vert=True, patch_artist=True)
     plt.title("Curvatures"); plt.ylabel("Curvature")
     img_bytes = io.BytesIO()
@@ -64,13 +65,14 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = "Fish Data"
-    sh.append(["Filename", "Fish Length (units)", "Curvature"])
+    sh.append(["Filename", "Fish Length (µm)", "Curvature"])
     for i, fname in enumerate(filenames):
         L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
         c = curvatures[i] if i < len(curvatures) else "N/A"
         if c == 5:
             c = "Not Classified"
         sh.append([fname, L, c])
+
     def _stats(vals):
         if not vals: return ("N/A",)*5
         vals_sorted = sorted(vals); n = len(vals_sorted)
@@ -80,15 +82,16 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_
         mean = sum(vals_sorted)/n
         std = (sum((x-mean)**2 for x in vals_sorted)/n)**0.5
         return median, p25, p75, mean, std
+
     medL,p25L,p75L,meanL,stdL = _stats(fish_lengths)
     medC,p25C,p75C,meanC,stdC = _stats(curvatures)
     sh.append([])
     if threshold_used:
         sh.append([f"Threshold used; statistics may be unreliable (threshold: {threshold_value})"])
     sh.append(["Statistics"])
-    sh.append(["Median Length", medL]); sh.append(["25th Percentile Length", p25L])
-    sh.append(["75th Percentile Length", p75L]); sh.append(["Mean Length", meanL])
-    sh.append(["Standard Deviation Length", stdL])
+    sh.append(["Median Length (µm)", medL]); sh.append(["25th Percentile Length (µm)", p25L])
+    sh.append(["75th Percentile Length (µm)", p75L]); sh.append(["Mean Length (µm)", meanL])
+    sh.append(["Standard Deviation Length (µm)", stdL])
     sh.append(["Median Curvature", medC]); sh.append(["25th Percentile Curvature", p25C])
     sh.append(["75th Percentile Curvature", p75C]); sh.append(["Mean Curvature", meanC])
     sh.append(["Standard Deviation Curvature", stdC])
@@ -101,9 +104,11 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_
     labels = ["Class 1","Class 2","Class 3","Class 4","Not Classified"]
     for i,lbl in enumerate(labels):
         sh.append([f"{lbl}", cls_counts[i]])
+
     if boxplot_png_bytes:
         img_stream = io.BytesIO(boxplot_png_bytes)
         img = ExcelImage(img_stream); sh.add_image(img, "E2")
+
     buf = io.BytesIO(); wb.save(buf); buf.seek(0); return buf
 
 def _normalize_mask(mask: np.ndarray) -> np.ndarray:
@@ -161,27 +166,75 @@ def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, li
             filenames.append(os.path.basename(f.name))
     return tmpdir, filenames
 
-def process(folder, files: Optional[List[gr.File]], process_curvature=True, process_length=True, use_threshold=False, threshold_value=0.5):
+def _safe_float(s, default=None):
+    try:
+        if s is None: return default
+        if isinstance(s, (int, float)): return float(s)
+        s = str(s).strip().replace(",", ".")
+        return float(s)
+    except Exception:
+        return default
+
+def process(folder,
+            files: Optional[List[gr.File]],
+            process_curvature=True,
+            process_length=True,
+            use_threshold=False,
+            threshold_value=0.5,
+            physical_horizontal_um_str="",
+            physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
     original_images, segmented_images, grown_images = segmentation_pipeline(work_dir)
     model = _ensure_model()
+
+    # Parse physical distances (µm) for full image width/height from user
+    phys_w_um_user = _safe_float(physical_horizontal_um_str, default=None)
+    phys_h_um_user = _safe_float(physical_vertical_um_str, default=None)
+
     fish_lengths, curvatures, previews = [], [], []
     for i, seg_mask in enumerate(segmented_images):
+        # Per-image pixel scales derived from user-provided physical distances
+        h, w = seg_mask.shape[:2]
+        # Default to pixel units if user did not provide values
+        if phys_w_um_user is not None and phys_h_um_user is not None:
+            phys_w_um = phys_w_um_user
+            phys_h_um = phys_h_um_user
+        else:
+            x_scale = 1.0
+            y_scale = 1.0
+            phys_w_um = float(w)  # fallback: treat pixels as "units"
+            phys_h_um = float(h)
+
         if process_length:
-            L, _ = get_fish_length_circles_fixed(seg_mask)
-            try: fish_lengths.append(float(L))
-            except Exception: pass
+            # NOTE: get_fish_length_circles_fixed now takes two extra args: physical width & height (µm)
+            # Call positionally to be robust to param names: (seg_mask, X_SCALE, Y_SCALE, circle_dia, phys_w_um, phys_h_um)
+            try:
+                L, _ = get_fish_length_circles_fixed(seg_mask, phys_w_um, phys_h_um, circle_dia=15)
+                fish_lengths.append(float(L))
+            except Exception:
+                # Fallback to legacy signature if needed
+                try:
+                    L, _ = get_fish_length_circles_fixed(seg_mask, x_scale, y_scale, 15)
+                    fish_lengths.append(float(L))
+                except Exception:
+                    pass
+
         if process_curvature:
-            _, curv = classification_curvature(original_images[i], grown_images[i], model, use_threshold, threshold_value)
-            try: curvatures.append(int(curv.item()))
-            except Exception: pass
+            try:
+                _, curv = classification_curvature(original_images[i], grown_images[i], model, use_threshold, threshold_value)
+                curvatures.append(int(curv.item()))
+            except Exception:
+                pass
+
         if len(previews) < 5:
             try:
                 overlay = _make_seg_overlay(original_images[i], seg_mask)
                 original_name = filenames[i] if i < len(filenames) else f"image_{i}"
                 cap = _shorten_name(original_name, max_chars=22)
                 previews.append([overlay, cap])
-            except Exception: pass
+            except Exception:
+                pass
+
     boxplot_png = _make_boxplots_image(fish_lengths, curvatures)
     boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
     out_bytes = write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, use_threshold, threshold_value, boxplot_png)
@@ -220,6 +273,12 @@ with gr.Blocks() as demo:
         chk_len  = gr.Checkbox(value=True, label="Process Length")
         chk_thr  = gr.Checkbox(value=False, label="Use Threshold")
         thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value")
+
+    # --- New physical distance inputs (µm), placed just above Run button ---
+    with gr.Row():
+        phys_w_um = gr.Textbox(label="Physical horizontal distance (µm)", placeholder="e.g., 1500")
+        phys_h_um = gr.Textbox(label="Physical vertical distance (µm)", placeholder="e.g., 1000")
+
     run = gr.Button("Run")
 
     with gr.Row():
@@ -233,6 +292,10 @@ with gr.Blocks() as demo:
         filenames_list = gr.Markdown("")
 
     # Use files from state, not a giant Files list
-    run.click(fn=process, inputs=[folder, files_state, chk_curv, chk_len, chk_thr, thr_val], outputs=[out_file, out_box, gallery, filenames_list])
+    run.click(
+        fn=process,
+        inputs=[folder, files_state, chk_curv, chk_len, chk_thr, thr_val, phys_w_um, phys_h_um],
+        outputs=[out_file, out_box, gallery, filenames_list]
+    )
 
 demo.launch()

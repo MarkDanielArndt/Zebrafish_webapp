@@ -164,12 +164,12 @@ Y_SCALE = 5885/256
 X_SCALE = 5885/256
 
 #Dresden
-# Y_SCALE = 5420/256
-# X_SCALE = 4090/256
+# X_SCALE = 5420/256
+# Y_SCALE = 4090/256
 
 
 
-def get_fish_length_circles_fixed(body_mask, circle_dia=15):
+def get_fish_length_circles_fixed(body_mask, X_SCALE = 5885, Y_SCALE = 5885, circle_dia=15):
     body_mask = np.array(body_mask)
     body_mask_bin = body_mask > 0
     eroded = binary_erosion(body_mask_bin)
@@ -246,8 +246,8 @@ def get_fish_length_circles_fixed(body_mask, circle_dia=15):
     circle_points_arr = np.array(circle_points, dtype=float)
     diffs = np.diff(circle_points_arr, axis=0)
     # diffs[:,0] is row (y), diffs[:,1] is col (x)
-    diffs[:, 0] *= Y_SCALE
-    diffs[:, 1] *= X_SCALE
+    diffs[:, 0] *= X_SCALE/256
+    diffs[:, 1] *= Y_SCALE/256
     segment_lengths = np.linalg.norm(diffs, axis=1)
     path_length = float(np.sum(segment_lengths))
     return path_length, np.array(circle_points)
