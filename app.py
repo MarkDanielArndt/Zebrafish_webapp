@@ -147,10 +147,12 @@ def _shorten_name(name: str, max_chars: int = 22) -> str:
 
 def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, list]:
     folder_path = None
+    # Gradio's File component for folders returns a list of filepaths, get the common parent directory
     if folder_input:
         if isinstance(folder_input, (list, tuple)):
+            # If folder_input is a list of filepaths, get the parent directory
             if len(folder_input) > 0 and isinstance(folder_input[0], str):
-                folder_path = folder_input[0]
+                folder_path = os.path.dirname(folder_input[0])
         elif isinstance(folder_input, str):
             folder_path = folder_input
     if folder_path and os.path.isdir(folder_path):
