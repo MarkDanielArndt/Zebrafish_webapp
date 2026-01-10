@@ -1,5 +1,5 @@
-gradio==4.36.1
-huggingface-hub==0.22.2
+gradio==4.44.0
+huggingface-hub<0.24
 torch>=2.1
 torchvision>=0.16
 timm>=0.9
