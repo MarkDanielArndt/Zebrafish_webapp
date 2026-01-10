@@ -8,8 +8,11 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from skimage import measure
-from scipy.ndimage import binary_erosion
+from scipy.ndimage import binary_erosion, convolve, distance_transform_edt
 from scipy.spatial.distance import cdist
+from scipy.spatial import cKDTree
+from skimage.morphology import medial_axis
+from skimage.graph import MCP_Geometric
 import torch.nn as nn
 import timm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -17,6 +20,138 @@ from collections import OrderedDict
 import torch.nn.functional as F
 import torchvision.transforms as T
 from huggingface_hub import hf_hub_download
+
+def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False):
+    """
+    Border-to-border, branch-free centerline length for a tube-like binary mask.
+
+    mask: 2D binary array
+    spacing: (dy, dx) in physical units
+    return_path: return (N,2) array of [row,col]
+    return_skeleton: return a bool image with only the centerline path
+    """
+    mask = mask.astype(bool)
+    if mask.sum() == 0:
+        out = (0.0,)
+        if return_path: out += (np.zeros((0, 2), dtype=int),)
+        if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
+        return out[0] if len(out) == 1 else out
+
+    # --- boundary pixels ---
+    boundary = mask & ~binary_erosion(mask)
+    bcoords = np.argwhere(boundary)
+    if len(bcoords) == 0:
+        out = (0.0,)
+        if return_path: out += (np.zeros((0, 2), dtype=int),)
+        if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
+        return out[0] if len(out) == 1 else out
+    btree = cKDTree(bcoords)
+
+    # --- medial axis + distance (in pixels) ---
+    skel, dist_skel = medial_axis(mask, return_distance=True)
+
+    # --- endpoints on skeleton (may be empty for loops) ---
+    k = np.ones((3, 3), dtype=np.uint8)
+    neigh = convolve(skel.astype(np.uint8), k, mode="constant", cval=0)
+    endpoints = np.argwhere(skel & (neigh == 2))
+    candidates = endpoints if len(endpoints) >= 2 else np.argwhere(skel)
+
+    if len(candidates) < 2:
+        # fallback: use boundary PCA extremes as rough endpoints
+        pts = np.argwhere(mask)
+        mu = pts.mean(axis=0)
+        X = pts - mu
+        # principal direction
+        _, _, vt = np.linalg.svd(X, full_matrices=False)
+        v = vt[0]
+        proj = (bcoords - mu) @ v
+        p1 = tuple(bcoords[np.argmin(proj)])
+        p2 = tuple(bcoords[np.argmax(proj)])
+        path = np.array([p1, p2], dtype=int)
+    else:
+        # --- diameter path on skeleton (branch-free polyline) ---
+        cost_skel = np.where(skel, 1.0, np.inf)
+        mcp_skel = MCP_Geometric(cost_skel, fully_connected=True)
+
+        A = tuple(candidates[0])
+        costsA, _ = mcp_skel.find_costs([A])
+        valsA = np.array([costsA[tuple(p)] for p in candidates])
+        B = tuple(candidates[np.nanargmax(valsA)])
+
+        costsB, _ = mcp_skel.find_costs([B])
+        valsB = np.array([costsB[tuple(p)] for p in candidates])
+        C = tuple(candidates[np.nanargmax(valsB)])
+
+        path_skel = np.array(mcp_skel.traceback(C), dtype=int)  # C -> ... -> B
+        if path_skel.size == 0:
+            out = (0.0,)
+            if return_path: out += (np.zeros((0, 2), dtype=int),)
+            if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
+            return out[0] if len(out) == 1 else out
+
+        # --- pick boundary endpoints in the *outward* direction of the skeleton path ---
+        def pick_boundary_endpoint(end_rc, dir_vec, search_r):
+            dir_norm = np.linalg.norm(dir_vec)
+            if dir_norm < 1e-6:
+                # fallback: nearest boundary
+                _, idx = btree.query(end_rc, k=1)
+                return tuple(bcoords[idx])
+            d = dir_vec / dir_norm
+
+            idxs = btree.query_ball_point(end_rc, r=search_r)
+            if len(idxs) == 0:
+                _, idx = btree.query(end_rc, k=1)
+                return tuple(bcoords[idx])
+
+            cand = bcoords[idxs]
+            v = cand - np.array(end_rc)[None, :]
+            score = v @ d  # projection along outward direction
+            best = cand[np.argmax(score)]
+            return tuple(best)
+
+        n = len(path_skel)
+        step = min(10, n - 1)
+
+        # outward direction at start (from inside towards border)
+        start = tuple(path_skel[0])
+        dir_start = path_skel[0] - path_skel[step]
+        r_start = max(5.0, 2.5 * float(dist_skel[start]))  # pixels
+        b1 = pick_boundary_endpoint(start, dir_start, r_start)
+
+        # outward direction at end
+        end = tuple(path_skel[-1])
+        dir_end = path_skel[-1] - path_skel[-1 - step]
+        r_end = max(5.0, 2.5 * float(dist_skel[end]))
+        b2 = pick_boundary_endpoint(end, dir_end, r_end)
+
+        # --- recompute border-to-border path inside mask, biased to center ---
+        dist = distance_transform_edt(mask)  # pixels
+        eps = 1e-3
+        cost = np.where(mask, 1.0 / (dist + eps), np.inf)  # prefer center (large dist)
+
+        mcp = MCP_Geometric(cost, fully_connected=True)
+        mcp.find_costs([b1])
+        path = np.array(mcp.traceback(b2), dtype=int)  # b2 -> ... -> b1
+
+        # ensure exact boundary endpoints are included
+        if path.size == 0:
+            path = np.array([b1, b2], dtype=int)
+
+    # --- compute physical length along the (branch-free) path ---
+    dy, dx = spacing
+    pf = path.astype(float)
+    dxy = np.diff(pf, axis=0)
+    seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
+    length = float(seg.sum())
+
+    skel_main = np.zeros_like(mask, dtype=bool)
+    if path.size:
+        skel_main[path[:, 0], path[:, 1]] = True
+
+    out = (length,)
+    if return_path: out += (path,)
+    if return_skeleton: out += (skel_main,)
+    return out[0] if len(out) == 1 else out
 
 def normalize_images(data):
         # Check if data contains np.arrays, if yes, directly normalize them

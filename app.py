@@ -2,7 +2,7 @@ import gradio as gr
 import tempfile, os, shutil
 from typing import List, Optional, Tuple
 from seg import segmentation_pipeline
-from length import load_model, get_fish_length_circles_fixed, classification_curvature
+from length import load_model, get_fish_length_circles_fixed, classification_curvature, tube_length_border2border
 import openpyxl, io
 from openpyxl.drawing.image import Image as ExcelImage
 import matplotlib.pyplot as plt
@@ -251,22 +251,28 @@ def process(folder,
         if phys_w_um_user is not None and phys_h_um_user is not None:
             phys_w_um = phys_w_um_user
             phys_h_um = phys_h_um_user
+            # Calculate spacing for the new function: (dy, dx) in physical units per pixel
+            y_scale = phys_h_um / 256  # physical units per pixel in y direction
+            x_scale = phys_w_um / 256  # physical units per pixel in x direction
         else:
-            x_scale = 1.0
-            y_scale = 1.0
-            phys_w_um = float(w)  # fallback: treat pixels as "units"
-            phys_h_um = float(h)
+            # Default spacing (assuming 5885 µm per 256 pixels as per the original code)
+            y_scale = 5885.0 / 256
+            x_scale = 5885.0 / 256
+            phys_w_um = 5885.0
+            phys_h_um = 5885.0
 
         if process_length:
-            # NOTE: get_fish_length_circles_fixed now takes two extra args: physical width & height (µm)
-            # Call positionally to be robust to param names: (seg_mask, X_SCALE, Y_SCALE, circle_dia, phys_w_um, phys_h_um)
+            # Use the new tube_length_border2border function
             try:
-                L, _ = get_fish_length_circles_fixed(seg_mask, phys_w_um, phys_h_um, circle_dia=15)
-                fish_lengths.append(float(L))
-            except Exception:
-                # Fallback to legacy signature if needed
+                seg_mask_bin = seg_mask > 0
+                spacing = (y_scale, x_scale)
+                length = tube_length_border2border(seg_mask_bin, spacing=spacing, return_path=False, return_skeleton=False)
+                fish_lengths.append(float(length))
+            except Exception as e:
+                print(f"Error calculating length for image {i}: {e}")
+                # Fallback to old method if needed
                 try:
-                    L, _ = get_fish_length_circles_fixed(seg_mask, x_scale, y_scale, 15)
+                    L, _ = get_fish_length_circles_fixed(seg_mask, phys_w_um, phys_h_um, circle_dia=15)
                     fish_lengths.append(float(L))
                 except Exception:
                     pass
