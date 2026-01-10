@@ -356,4 +356,4 @@ with gr.Blocks() as demo:
         outputs=[out_file, out_box, gallery, filenames_list]
     )
 
-demo.launch()
+demo.launch(share=True)
