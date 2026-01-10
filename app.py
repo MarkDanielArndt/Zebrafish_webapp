@@ -356,4 +356,4 @@ with gr.Blocks() as demo:
         outputs=[out_file, out_box, gallery, filenames_list]
     )
 
-demo.launch(server_name="0.0.0.0", server_port=7860)
+demo.launch()
