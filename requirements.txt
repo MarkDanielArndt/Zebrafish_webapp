@@ -1,5 +1,5 @@
 # Zebrafish webapp dependencies - updated 2026-01-10
-gradio==4.36.1
+gradio==4.44.1
 huggingface-hub==0.22.2
 torch>=2.1
 torchvision>=0.16
