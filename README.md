@@ -27,7 +27,13 @@ Select the folder of your choosing from the file dialog:
 
 ![Select folder](Documentation_images/screenshot3.png)
 
-Then click "Upload" to upload the folder.
+Then click "Upload" to upload the folder. You'll need to confirm the upload by clicking "Hochladen" again:
+
+![Confirm upload](Documentation_images/screenshot5.png)
+
+Wait for the images to load and appear:
+
+![Images loaded](Documentation_images/screenshot6.png)
 
 #### Method 2: Upload Individual Images
 
