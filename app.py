@@ -312,7 +312,13 @@ def summarize_files(files):
 
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
-
+    gr.Markdown("""
+    📖 **Documentation:** For detailed instructions and usage examples, please visit the [GitHub repository](https://github.com/MarkDanielArndt/Zebrafish_webapp).
+    
+    This webapp is provided freely to the research community. If you find it useful, please consider giving the repository a ⭐ (it's free!). 
+    If you use this tool in your research, please cite: *[Paper - soon to be published]*.
+    """
+    )
     # Left: folder upload + compact upload button
     with gr.Row():
         folder = gr.File(label="Upload a folder (preferred)", file_count="directory", type="filepath")
