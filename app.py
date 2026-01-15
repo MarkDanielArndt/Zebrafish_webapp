@@ -345,8 +345,10 @@ def _draw_cross(img_np):
             img = np.stack([img]*3, axis=-1)
         h, w = img.shape[:2]
         thickness = max(2, int(min(h, w) * 0.03))
-        cv2.line(img, (0, 0), (w - 1, h - 1), (255, 0, 0), thickness=thickness)
-        cv2.line(img, (w - 1, 0), (0, h - 1), (255, 0, 0), thickness=thickness)
+        # draw a less-bright red cross so it is visible but not overpowering
+        cross_color = (150, 0, 0)
+        cv2.line(img, (0, 0), (w - 1, h - 1), cross_color, thickness=thickness)
+        cv2.line(img, (w - 1, 0), (0, h - 1), cross_color, thickness=thickness)
         return img
     except Exception:
         return img_np
