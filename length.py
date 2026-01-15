@@ -166,7 +166,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     out = (length, straight_length,)
     if return_path: out += (path,)
     if return_skeleton: out += (skel_main,)
-    return out[0] if len(out) == 1 else out
+    return out
 
 def normalize_images(data):
         # Check if data contains np.arrays, if yes, directly normalize them
