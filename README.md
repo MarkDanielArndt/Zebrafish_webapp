@@ -90,7 +90,7 @@ After processing, you can download an Excel sheet containing individual fish ann
 
 Below the download button, you'll see boxplots visualizing the distribution of the selected endpoints. These boxplots are also included in the Excel file:
 
-![Boxplots](Documentation_images/screenshot_boxplot.png)
+![Boxplots](Documentation_images/screenshot_boxplots.png)
 
 The boxplots display:
 - **Fish Lengths**: Distribution of measured centerline lengths in µm
