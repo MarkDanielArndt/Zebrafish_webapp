@@ -288,7 +288,9 @@ def process(folder,
         try:
             overlay = _make_seg_overlay(original_images[i], seg_mask)
             original_name = filenames[i] if i < len(filenames) else f"image_{i}"
-            cap = _shorten_name(original_name, max_chars=22)
+            short = _shorten_name(original_name, max_chars=22)
+            # embed index into caption so selection handlers can identify images robustly
+            cap = f"{i}:{short}"
             previews.append([overlay, cap])
         except Exception:
             pass
@@ -343,11 +345,27 @@ def _toggle_exclusion(sel_idx, excluded, data):
     # ensure excluded list length
     if excluded is None or len(excluded) != len(data['filenames']):
         excluded = [False] * len(data['filenames'])
-    # sel_idx from gallery.select may be an int or a dict-like; coerce
+    # sel_idx from gallery.select may be an int, a caption string, or a [image, caption] tuple
+    idx = None
     try:
+        # direct int (gradio sometimes provides index)
         idx = int(sel_idx)
     except Exception:
-        # if selection not convertible, return current state
+        pass
+    if idx is None:
+        # sel_idx may be like [image, caption] or caption string
+        try:
+            if isinstance(sel_idx, (list, tuple)) and len(sel_idx) > 1 and isinstance(sel_idx[1], str):
+                caption = sel_idx[1]
+            elif isinstance(sel_idx, str):
+                caption = sel_idx
+            else:
+                caption = None
+            if caption is not None and ':' in caption:
+                idx = int(caption.split(':', 1)[0])
+        except Exception:
+            idx = None
+    if idx is None:
         return gr.update(), excluded
     if 0 <= idx < len(excluded):
         excluded[idx] = not bool(excluded[idx])
@@ -419,13 +437,14 @@ with gr.Blocks() as demo:
 
     with gr.Row():
         out_file = gr.File(label="Download results (.xlsx)")
-        gen_filtered_btn = gr.Button("Generate Filtered Excel")
 
     with gr.Accordion("Results previews", open=True):
         with gr.Row():
             out_box = gr.Image(label="Box plots", type="numpy")
         with gr.Row():
             gallery = gr.Gallery(label="Segmentations (click to toggle exclude)", columns=5, height="auto")
+        with gr.Row():
+            gen_filtered_btn = gr.Button("Generate Filtered Excel")
         filenames_list = gr.Markdown("")
 
     # Use files from state, not a giant Files list
