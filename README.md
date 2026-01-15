@@ -93,10 +93,27 @@ Below the download button, you'll see boxplots visualizing the distribution of t
 
 #### Segmentation Preview
 
-A preview of the first 5 segmentations is displayed below the boxplots:
-
-![Segmentation preview](Documentation_images/screenshot11.png)
+A gallery displays segmentation overlays for the uploaded images (thumbnails include a short filename label). You can interact with the gallery to mark images for exclusion before exporting a filtered results file — see the next section for details.
 
 **Important:** Verify that the segmentations accurately match the fish. If the segmentations are incorrect or misaligned, the resulting endpoint measurements will be inaccurate. If you notice issues with the segmentations, you may need to adjust your images or use the threshold mode for manual review.
 
----
+### Excluding segmentations & generating a filtered Excel
+
+After the run you can exclude individual segmentation results and create a new Excel that omits those excluded images (the original Excel download remains unchanged).
+
+- Click an image in the "Segmentations" gallery to toggle exclusion; excluded images are crossed out and annotated "(excluded)". As an alternative, use the checkbox row under the gallery to select images to exclude (labels are formatted `index:filename`).
+- When you're ready, press the **Generate Filtered Excel** button (below the gallery). A separate download link `Download filtered results (.xlsx)` will appear containing only the non-excluded images.
+
+See the UI examples:
+
+![Gallery with crossed exclusion](Documentation_images/screenshot14.png)
+
+The checkboxes under the gallery (or the gallery-click) let you mark images to exclude:
+
+![Exclude with checkboxes](Documentation_images/screenshot15.png)
+
+After generating, the filtered Excel file appears as a separate download and does not modify the original results file:
+
+![Filtered file download](Documentation_images/screenshot16.png)
+
+Use this workflow to remove bad segmentations or obvious outliers before downstream analysis.
