@@ -369,14 +369,21 @@ def _toggle_exclusion(sel_idx, excluded, data):
         return gr.update(), excluded
     if 0 <= idx < len(excluded):
         excluded[idx] = not bool(excluded[idx])
-    # rebuild previews with cross for excluded
+    # rebuild previews with cross for excluded and update data state
     previews = []
     for i, (img, cap) in enumerate(data.get('previews', [])):
+        short_cap = cap
+        # original caps may be like 'idx:shortname' or already suffixed
+        if isinstance(short_cap, str) and ':' in short_cap:
+            # keep original short label after colon
+            short_cap = short_cap.split(':', 1)[1]
         if i < len(excluded) and excluded[i]:
-            previews.append([_draw_cross(img), cap + " (excluded)"])
+            previews.append([_draw_cross(img), f"{i}:{short_cap} (excluded)"])
         else:
-            previews.append([img, cap])
-    return previews, excluded
+            previews.append([img, f"{i}:{short_cap}"])
+    # persist the updated previews in data so subsequent toggles use latest images
+    data['previews'] = previews
+    return previews, excluded, data
 
 
 def _generate_filtered_excel(data, excluded):
@@ -446,6 +453,8 @@ with gr.Blocks() as demo:
         with gr.Row():
             gen_filtered_btn = gr.Button("Generate Filtered Excel")
         filenames_list = gr.Markdown("")
+        with gr.Row():
+            out_file_filtered = gr.File(label="Download filtered results (.xlsx)")
 
     # Use files from state, not a giant Files list
     run.click(
@@ -455,10 +464,11 @@ with gr.Blocks() as demo:
     )
 
     # When a gallery image is clicked, toggle its exclusion state and update previews
-    gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state])
+    # Note: the handler returns previews, excluded_state and updated data_state
+    gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state, data_state])
 
-    # Generate a filtered excel that omits excluded images
-    gen_filtered_btn.click(fn=_generate_filtered_excel, inputs=[data_state, excluded_state], outputs=[out_file])
+    # Generate a filtered excel that omits excluded images (writes to separate file output)
+    gen_filtered_btn.click(fn=_generate_filtered_excel, inputs=[data_state, excluded_state], outputs=[out_file_filtered])
 
 if __name__ == "__main__":
     demo.launch(share=True)
