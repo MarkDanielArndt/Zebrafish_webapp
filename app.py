@@ -131,7 +131,9 @@ def _make_seg_overlay(original_img, seg_mask) -> np.ndarray:
     if mask.shape[:2] != base.shape[:2]:
         mask = np.array(PILImage.fromarray(mask).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
     overlay = base.copy().astype(np.float32)
-    alpha = 0.4; red = np.zeros_like(overlay); red[..., 0] = 255
+    # make the red overlay less bright and slightly more subtle
+    alpha = 0.35
+    red = np.zeros_like(overlay); red[..., 0] = 150
     m = (mask > 0)[..., None].astype(np.float32)
     overlay = overlay * (1 - alpha * m) + red * (alpha * m)
     overlay = overlay.clip(0,255).astype(np.uint8)
@@ -301,6 +303,14 @@ def process(folder,
     tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data.xlsx")
     with open(out_xlsx, "wb") as f: f.write(out_bytes.getvalue())
     # Prepare state for interactive filtering
+    # Keep a copy of the original previews so crosses can be added/removed reversibly
+    original_previews = []
+    for img, cap in previews:
+        try:
+            original_previews.append([img.copy(), cap])
+        except Exception:
+            original_previews.append([img, cap])
+
     data_state = {
         'filenames': filenames,
         'fish_lengths': fish_lengths,
@@ -309,6 +319,7 @@ def process(folder,
         'threshold_used': use_threshold,
         'threshold_value': threshold_value,
         'previews': previews,
+        'original_previews': original_previews,
     }
     excluded_state = [False] * len(filenames)
     shown_names = [_shorten_name(n, max_chars=22) for n in filenames[:5]]
@@ -374,17 +385,16 @@ def _toggle_exclusion(sel_idx, excluded, data):
         excluded[idx] = not bool(excluded[idx])
     # rebuild previews with cross for excluded and update data state
     previews = []
-    for i, (img, cap) in enumerate(data.get('previews', [])):
+    originals = data.get('original_previews', data.get('previews', []))
+    for i, (orig_img, cap) in enumerate(originals):
         short_cap = cap
-        # original caps may be like 'idx:shortname' or already suffixed
         if isinstance(short_cap, str) and ':' in short_cap:
-            # keep original short label after colon
             short_cap = short_cap.split(':', 1)[1]
         if i < len(excluded) and excluded[i]:
-            previews.append([_draw_cross(img), f"{i}:{short_cap} (excluded)"])
+            previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
         else:
-            previews.append([img, f"{i}:{short_cap}"])
-    # persist the updated previews in data so subsequent toggles use latest images
+            previews.append([orig_img, f"{i}:{short_cap}"])
+    # persist the updated previews in data so subsequent toggles use original images
     data['previews'] = previews
     return previews, excluded, data
 
@@ -424,15 +434,15 @@ def _update_from_checkboxes(selected, data):
                 continue
     # rebuild previews with crosses for excluded images
     previews = []
-    for i, (img, cap) in enumerate(data.get('previews', [])):
-        # normalize cap to shortname
+    originals = data.get('original_previews', data.get('previews', []))
+    for i, (orig_img, cap) in enumerate(originals):
         short_cap = cap
         if isinstance(short_cap, str) and ':' in short_cap:
             short_cap = short_cap.split(':', 1)[1]
         if excluded[i]:
-            previews.append([_draw_cross(img), f"{i}:{short_cap} (excluded)"])
+            previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
         else:
-            previews.append([img, f"{i}:{short_cap}"])
+            previews.append([orig_img, f"{i}:{short_cap}"])
     data['previews'] = previews
     return previews, excluded, data
 
