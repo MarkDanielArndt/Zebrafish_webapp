@@ -460,19 +460,30 @@ def _generate_filtered_excel(data, excluded):
         return None
     excluded = excluded or []
     fnames, Ls, Cs, Rs = [], [], [], []
-    # Check if we have ratios data
+    # Check what data we have available
+    has_lengths = 'fish_lengths' in data and data['fish_lengths']
+    has_curvatures = 'curvatures' in data and data['curvatures']
     has_ratios = 'ratios' in data and data['ratios']
+    
     for i, name in enumerate(data['filenames']):
         if i < len(excluded) and excluded[i]:
             continue
         fnames.append(name)
-        Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
-        Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
+        if has_lengths:
+            Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
+        if has_curvatures:
+            Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
         if has_ratios:
             Rs.append(data['ratios'][i] if i < len(data['ratios']) else "N/A")
-    # Pass empty list if no ratios
+    
+    # Pass empty lists for features that weren't processed
+    if not has_lengths:
+        Ls = []
+    if not has_curvatures:
+        Cs = []
     if not has_ratios:
         Rs = []
+    
     out_bytes = write_lengths_to_excel_bytes(fnames, Ls, Cs, Rs, data.get('threshold_used', False), data.get('threshold_value', 0.0), data.get('boxplot_png', None))
     tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data_filtered.xlsx")
     with open(out_xlsx, "wb") as f:
