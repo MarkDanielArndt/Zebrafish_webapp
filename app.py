@@ -48,16 +48,31 @@ def _to_numpy(img):
     return img
 
 def _make_boxplots_image(fish_lengths, curvatures, ratios):
-    fig = plt.figure(figsize=(15,5))
-    plt.subplot(1,3,1)
-    if fish_lengths: plt.boxplot(fish_lengths, vert=True, patch_artist=True)
-    plt.title("Fish Lengths"); plt.ylabel("Length (µm)")
-    plt.subplot(1,3,2)
-    if curvatures: plt.boxplot(curvatures, vert=True, patch_artist=True)
-    plt.title("Curvatures"); plt.ylabel("Curvature")
-    plt.subplot(1,3,3)
-    if ratios: plt.boxplot(ratios, vert=True, patch_artist=True)
-    plt.title("Length/Straight Line Ratio"); plt.ylabel("Ratio")
+    # Count how many plots we need
+    num_plots = sum([bool(fish_lengths), bool(curvatures), bool(ratios)])
+    if num_plots == 0:
+        num_plots = 1  # At least one subplot
+    
+    fig = plt.figure(figsize=(5*num_plots, 5))
+    plot_idx = 1
+    
+    if fish_lengths:
+        plt.subplot(1, num_plots, plot_idx)
+        plt.boxplot(fish_lengths, vert=True, patch_artist=True)
+        plt.title("Fish Lengths"); plt.ylabel("Length (µm)")
+        plot_idx += 1
+    
+    if curvatures:
+        plt.subplot(1, num_plots, plot_idx)
+        plt.boxplot(curvatures, vert=True, patch_artist=True)
+        plt.title("Curvatures"); plt.ylabel("Curvature")
+        plot_idx += 1
+    
+    if ratios:
+        plt.subplot(1, num_plots, plot_idx)
+        plt.boxplot(ratios, vert=True, patch_artist=True)
+        plt.title("Length/Straight Line Ratio"); plt.ylabel("Ratio")
+    
     img_bytes = io.BytesIO()
     plt.tight_layout()
     plt.savefig(img_bytes, format='png', bbox_inches='tight')
@@ -69,14 +84,27 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, th
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = "Fish Data"
-    sh.append(["Filename", "Fish Length (µm)", "Curvature", "Length/Straight Line Ratio"])
+    # Build header dynamically based on what data we have
+    header = ["Filename"]
+    if fish_lengths: header.append("Fish Length (µm)")
+    if curvatures: header.append("Curvature")
+    if ratios: header.append("Length/Straight Line Ratio")
+    sh.append(header)
+    
     for i, fname in enumerate(filenames):
-        L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
-        c = curvatures[i] if i < len(curvatures) else "N/A"
-        r = ratios[i] if i < len(ratios) else "N/A"
-        if c == 5:
-            c = "Not Classified"
-        sh.append([fname, L, c, r])
+        row = [fname]
+        if fish_lengths:
+            L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
+            row.append(L)
+        if curvatures:
+            c = curvatures[i] if i < len(curvatures) else "N/A"
+            if c == 5:
+                c = "Not Classified"
+            row.append(c)
+        if ratios:
+            r = ratios[i] if i < len(ratios) else "N/A"
+            row.append(r)
+        sh.append(row)
 
     def _stats(vals):
         if not vals: return ("N/A",)*5
@@ -88,22 +116,28 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, th
         std = (sum((x-mean)**2 for x in vals_sorted)/n)**0.5
         return median, p25, p75, mean, std
 
-    medL,p25L,p75L,meanL,stdL = _stats(fish_lengths)
-    medC,p25C,p75C,meanC,stdC = _stats(curvatures)
-    medR,p25R,p75R,meanR,stdR = _stats(ratios)
     sh.append([])
     if threshold_used:
         sh.append([f"Threshold used; statistics may be unreliable (threshold: {threshold_value})"])
     sh.append(["Statistics"])
-    sh.append(["Median Length (µm)", medL]); sh.append(["25th Percentile Length (µm)", p25L])
-    sh.append(["75th Percentile Length (µm)", p75L]); sh.append(["Mean Length (µm)", meanL])
-    sh.append(["Standard Deviation Length (µm)", stdL])
-    sh.append(["Median Curvature", medC]); sh.append(["25th Percentile Curvature", p25C])
-    sh.append(["75th Percentile Curvature", p75C]); sh.append(["Mean Curvature", meanC])
-    sh.append(["Standard Deviation Curvature", stdC])
-    sh.append(["Median Ratio", medR]); sh.append(["25th Percentile Ratio", p25R])
-    sh.append(["75th Percentile Ratio", p75R]); sh.append(["Mean Ratio", meanR])
-    sh.append(["Standard Deviation Ratio", stdR])
+    
+    if fish_lengths:
+        medL,p25L,p75L,meanL,stdL = _stats(fish_lengths)
+        sh.append(["Median Length (µm)", medL]); sh.append(["25th Percentile Length (µm)", p25L])
+        sh.append(["75th Percentile Length (µm)", p75L]); sh.append(["Mean Length (µm)", meanL])
+        sh.append(["Standard Deviation Length (µm)", stdL])
+    
+    if curvatures:
+        medC,p25C,p75C,meanC,stdC = _stats(curvatures)
+        sh.append(["Median Curvature", medC]); sh.append(["25th Percentile Curvature", p25C])
+        sh.append(["75th Percentile Curvature", p75C]); sh.append(["Mean Curvature", meanC])
+        sh.append(["Standard Deviation Curvature", stdC])
+    
+    if ratios:
+        medR,p25R,p75R,meanR,stdR = _stats(ratios)
+        sh.append(["Median Ratio", medR]); sh.append(["25th Percentile Ratio", p25R])
+        sh.append(["75th Percentile Ratio", p75R]); sh.append(["Mean Ratio", meanR])
+        sh.append(["Standard Deviation Ratio", stdR])
     sh.append([]); sh.append(["Class Distribution"])
     cls_counts = [0,0,0,0,0]
     for c in curvatures:
@@ -242,6 +276,7 @@ def process(folder,
             files: Optional[List[gr.File]],
             process_curvature=True,
             process_length=True,
+            process_ratio=True,
             use_threshold=False,
             threshold_value=0.5,
             physical_horizontal_um_str="",
@@ -279,19 +314,22 @@ def process(folder,
                 spacing = (y_scale, x_scale)
                 length, straight_length = tube_length_border2border(seg_mask_bin, spacing=spacing, return_path=False, return_skeleton=False)
                 fish_lengths.append(float(length))
-                # Calculate ratio, avoiding division by zero
-                if straight_length > 0:
-                    ratio = float(length) / float(straight_length)
-                else:
-                    ratio = 0.0
-                ratios.append(ratio)
+                # Calculate ratio only if checkbox is enabled
+                if process_ratio:
+                    # Calculate ratio, avoiding division by zero
+                    if straight_length > 0:
+                        ratio = float(length) / float(straight_length)
+                    else:
+                        ratio = 0.0
+                    ratios.append(ratio)
             except Exception as e:
                 print(f"Error calculating length for image {i}: {e}")
                 # Fallback to old method if needed
                 try:
                     L, _ = get_fish_length_circles_fixed(seg_mask, phys_w_um, phys_h_um, circle_dia=15)
                     fish_lengths.append(float(L))
-                    ratios.append(0.0)  # No ratio available for fallback method
+                    if process_ratio:
+                        ratios.append(0.0)  # No ratio available for fallback method
                 except Exception:
                     pass
 
@@ -494,6 +532,7 @@ with gr.Blocks() as demo:
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
         chk_len  = gr.Checkbox(value=True, label="Process Length")
+        chk_ratio = gr.Checkbox(value=True, label="Process Length/Straight Line Ratio")
         chk_thr  = gr.Checkbox(value=False, label="Use Threshold")
         thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value")
 
@@ -524,7 +563,7 @@ with gr.Blocks() as demo:
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
-        inputs=[folder, files_state, chk_curv, chk_len, chk_thr, thr_val, phys_w_um, phys_h_um],
+        inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_thr, thr_val, phys_w_um, phys_h_um],
         outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes]
     )
 
