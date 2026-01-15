@@ -314,7 +314,10 @@ def process(folder,
     shown_names = [_shorten_name(n, max_chars=22) for n in filenames[:5]]
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
-    return out_xlsx, boxplot_np, previews, filenames_md, data_state, excluded_state
+    # also prepare checkbox choices (index:shortname) for exclusion UI
+    exclude_choices = [f"{i}:{_shorten_name(n, max_chars=22)}" for i, n in enumerate(filenames)]
+    # return a gradio update for choices so the CheckboxGroup can be populated
+    return out_xlsx, boxplot_np, previews, filenames_md, data_state, excluded_state, gr.update(choices=exclude_choices, value=[])
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -403,6 +406,36 @@ def _generate_filtered_excel(data, excluded):
         f.write(out_bytes.getvalue())
     return out_xlsx
 
+
+def _update_from_checkboxes(selected, data):
+    # selected: list of caption strings like '3:shortname' to be excluded
+    if data is None:
+        return gr.update(), [], data
+    # derive excluded boolean list
+    n = len(data.get('filenames', []))
+    excluded = [False] * n
+    if selected:
+        for s in selected:
+            try:
+                idx = int(str(s).split(':', 1)[0])
+                if 0 <= idx < n:
+                    excluded[idx] = True
+            except Exception:
+                continue
+    # rebuild previews with crosses for excluded images
+    previews = []
+    for i, (img, cap) in enumerate(data.get('previews', [])):
+        # normalize cap to shortname
+        short_cap = cap
+        if isinstance(short_cap, str) and ':' in short_cap:
+            short_cap = short_cap.split(':', 1)[1]
+        if excluded[i]:
+            previews.append([_draw_cross(img), f"{i}:{short_cap} (excluded)"])
+        else:
+            previews.append([img, f"{i}:{short_cap}"])
+    data['previews'] = previews
+    return previews, excluded, data
+
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
     gr.Markdown("""
@@ -453,6 +486,9 @@ with gr.Blocks() as demo:
         with gr.Row():
             gen_filtered_btn = gr.Button("Generate Filtered Excel")
         filenames_list = gr.Markdown("")
+        # CheckboxGroup to select images to exclude (populated after Run)
+        with gr.Row():
+            exclude_checkboxes = gr.CheckboxGroup(choices=[], label="Exclude images (check to exclude)")
         with gr.Row():
             out_file_filtered = gr.File(label="Download filtered results (.xlsx)")
 
@@ -460,12 +496,15 @@ with gr.Blocks() as demo:
     run.click(
         fn=process,
         inputs=[folder, files_state, chk_curv, chk_len, chk_thr, thr_val, phys_w_um, phys_h_um],
-        outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state]
+        outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes]
     )
 
     # When a gallery image is clicked, toggle its exclusion state and update previews
     # Note: the handler returns previews, excluded_state and updated data_state
     gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state, data_state])
+
+    # Checkbox-based exclusion handler (alternative to clicking images)
+    exclude_checkboxes.change(fn=_update_from_checkboxes, inputs=[exclude_checkboxes, data_state], outputs=[gallery, excluded_state, data_state])
 
     # Generate a filtered excel that omits excluded images (writes to separate file output)
     gen_filtered_btn.click(fn=_generate_filtered_excel, inputs=[data_state, excluded_state], outputs=[out_file_filtered])
