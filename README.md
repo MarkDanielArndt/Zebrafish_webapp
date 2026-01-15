@@ -12,20 +12,20 @@ pinned: false
 # 🐟 Zebrafish Segmentation Web App
 
 ## Table of Contents
-- [How to Use](#how-to-use)
+- [How to use the Zebrafish Segmentation Web App](#How-to-use-the-Zebrafish-Segmentation-Web-App)
   - [Uploading Images](#uploading-images)
     - [Method 1: Upload a Folder (Preferred)](#method-1-upload-a-folder-preferred)
     - [Method 2: Upload Individual Images](#method-2-upload-individual-images)
   - [Selecting Endpoints](#selecting-endpoints)
   - [Results and Downloads](#results-and-downloads)
 
-## How to Use
+## How to use the Zebrafish Segmentation Web App
 
 ### Uploading Images
 
 You can upload images of the zebrafish in two ways:
 
-#### Method 1: Upload a Folder (Preferred)
+#### Method 1: Upload a Folder
 
 You can upload an entire folder containing zebrafish images.
 
@@ -64,12 +64,13 @@ After uploading your images, choose which endpoints you want to analyze:
 ![Select endpoints](Documentation_images/screenshot8.png)
 
 You can select:
-- **Length**: Measure the length of the zebrafish
+- **Length**: Measure the length of the zebrafish (centerline path length in µm)
 - **Curvature**: Classify the zebrafish into curvature classes (1-4)
   - Class 1: Most severe curvature
   - Class 2: Moderate-severe curvature
   - Class 3: Mild curvature
   - Class 4: Most healthy (minimal curvature)
+- **Length/Straight Line Ratio**: The ratio between the actual centerline length and the straight-line distance between endpoints. A value close to 1.0 indicates a nearly straight fish, while higher values indicate more curvature. This metric quantifies body curvature independently of fish size.
 
 You can also choose whether to enable **Threshold/Human-in-the-Loop mode** and set a threshold value. This mode allows for manual review of uncertain predictions (more details below).
 
@@ -89,7 +90,18 @@ After processing, you can download an Excel sheet containing individual fish ann
 
 Below the download button, you'll see boxplots visualizing the distribution of the selected endpoints. These boxplots are also included in the Excel file:
 
-![Boxplots](Documentation_images/screenshot10.png)
+![Boxplots](Documentation_images/screenshot_boxplot.png)
+
+The boxplots display:
+- **Fish Lengths**: Distribution of measured centerline lengths in µm
+- **Curvatures**: Distribution of curvature classifications (1-4)
+- **Length/Straight Line Ratio**: Distribution of the length ratio metric, where values closer to 1.0 indicate straighter fish
+
+The ratio visualization helps identify fish with significant body curvature. You can see in the example image that some fish have ratios above 1.0, indicating curved body shapes:
+
+![Length/Straight Line Ratio explanation](Documentation_images/screenshot_rel_length.png)
+
+The cyan line shows the straight-line distance between endpoints, while the actual centerline path (shown in red) is longer due to body curvature. The ratio quantifies this difference.
 
 #### Segmentation Preview
 

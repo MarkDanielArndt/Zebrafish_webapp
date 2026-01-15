@@ -57,7 +57,7 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios):
     plt.title("Curvatures"); plt.ylabel("Curvature")
     plt.subplot(1,3,3)
     if ratios: plt.boxplot(ratios, vert=True, patch_artist=True)
-    plt.title("Length/Straight Length Ratio"); plt.ylabel("Ratio")
+    plt.title("Length/Straight Line Ratio"); plt.ylabel("Ratio")
     img_bytes = io.BytesIO()
     plt.tight_layout()
     plt.savefig(img_bytes, format='png', bbox_inches='tight')
@@ -69,7 +69,7 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, th
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = "Fish Data"
-    sh.append(["Filename", "Fish Length (µm)", "Curvature", "Length/Straight Length Ratio"])
+    sh.append(["Filename", "Fish Length (µm)", "Curvature", "Length/Straight Line Ratio"])
     for i, fname in enumerate(filenames):
         L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
         c = curvatures[i] if i < len(curvatures) else "N/A"
