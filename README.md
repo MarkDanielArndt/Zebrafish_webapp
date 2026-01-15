@@ -35,7 +35,7 @@ Select the folder of your choosing from the file dialog:
 
 ![Select folder](Documentation_images/screenshot3.png)
 
-Then click "Upload" to upload the folder. You'll need to confirm the upload by clicking "Hochladen" again:
+Then click "Upload" to upload the folder. You'll need to confirm the upload by clicking "Upload" again:
 
 ![Confirm upload](Documentation_images/screenshot5.png)
 
@@ -72,6 +72,14 @@ You can select:
   - Class 4: Most healthy (minimal curvature)
 
 You can also choose whether to enable **Threshold/Human-in-the-Loop mode** and set a threshold value. This mode allows for manual review of uncertain predictions (more details below).
+
+**Threshold / Human-in-the-Loop (Curvature only)**
+
+If you activate threshold mode you may set a confidence threshold between 0.0 and 1.0. The curvature classifier provides an inherent confidence score for its predicted curvature label; if the model's confidence for an image does not exceed the chosen threshold, that image will not be assigned a curvature class and will instead be reported as "Not Classified" in the Excel output. This thresholding applies only to curvature classification, length measurements are not affected.
+
+Example: see [Documentation_images/screenshot12.png](Documentation_images/screenshot12.png). The left side shows the Excel output with threshold mode disabled (all images receive a curvature class). The right side shows threshold mode enabled with a threshold of 0.95: several images have confidence below 0.95 and are therefore marked "Not Classified", allowing those cases to be routed for manual review.
+
+Use a higher threshold to reduce automatic curvature assignments and increase human review of uncertain cases; choose a lower threshold to classify more images automatically.
 
 ### Results and Downloads
 
