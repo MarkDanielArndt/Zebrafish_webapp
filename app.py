@@ -8,6 +8,7 @@ from openpyxl.drawing.image import Image as ExcelImage
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image as PILImage
+import cv2
 
 try:
     import torch
@@ -284,24 +285,34 @@ def process(folder,
             except Exception:
                 pass
 
-        if len(previews) < 5:
-            try:
-                overlay = _make_seg_overlay(original_images[i], seg_mask)
-                original_name = filenames[i] if i < len(filenames) else f"image_{i}"
-                cap = _shorten_name(original_name, max_chars=22)
-                previews.append([overlay, cap])
-            except Exception:
-                pass
+        try:
+            overlay = _make_seg_overlay(original_images[i], seg_mask)
+            original_name = filenames[i] if i < len(filenames) else f"image_{i}"
+            cap = _shorten_name(original_name, max_chars=22)
+            previews.append([overlay, cap])
+        except Exception:
+            pass
 
     boxplot_png = _make_boxplots_image(fish_lengths, curvatures)
     boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
     out_bytes = write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, use_threshold, threshold_value, boxplot_png)
     tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data.xlsx")
     with open(out_xlsx, "wb") as f: f.write(out_bytes.getvalue())
+    # Prepare state for interactive filtering
+    data_state = {
+        'filenames': filenames,
+        'fish_lengths': fish_lengths,
+        'curvatures': curvatures,
+        'boxplot_png': boxplot_png,
+        'threshold_used': use_threshold,
+        'threshold_value': threshold_value,
+        'previews': previews,
+    }
+    excluded_state = [False] * len(filenames)
     shown_names = [_shorten_name(n, max_chars=22) for n in filenames[:5]]
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
-    return out_xlsx, boxplot_np, previews, filenames_md
+    return out_xlsx, boxplot_np, previews, filenames_md, data_state, excluded_state
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -309,6 +320,63 @@ def summarize_files(files):
     short = [_shorten_name(n, max_chars=22) for n in names]
     more = f" … and {len(files) - 5} more" if len(files) > 5 else ""
     return "**Uploaded:** " + ", ".join(short) + more
+
+
+def _draw_cross(img_np):
+    try:
+        img = img_np.copy()
+        if img.ndim == 2:
+            img = np.stack([img]*3, axis=-1)
+        h, w = img.shape[:2]
+        thickness = max(2, int(min(h, w) * 0.03))
+        cv2.line(img, (0, 0), (w - 1, h - 1), (255, 0, 0), thickness=thickness)
+        cv2.line(img, (w - 1, 0), (0, h - 1), (255, 0, 0), thickness=thickness)
+        return img
+    except Exception:
+        return img_np
+
+
+def _toggle_exclusion(sel_idx, excluded, data):
+    # sel_idx: index of clicked image (int or list); excluded: list of bools; data: data_state dict
+    if data is None:
+        return gr.update(), excluded
+    # ensure excluded list length
+    if excluded is None or len(excluded) != len(data['filenames']):
+        excluded = [False] * len(data['filenames'])
+    # sel_idx from gallery.select may be an int or a dict-like; coerce
+    try:
+        idx = int(sel_idx)
+    except Exception:
+        # if selection not convertible, return current state
+        return gr.update(), excluded
+    if 0 <= idx < len(excluded):
+        excluded[idx] = not bool(excluded[idx])
+    # rebuild previews with cross for excluded
+    previews = []
+    for i, (img, cap) in enumerate(data.get('previews', [])):
+        if i < len(excluded) and excluded[i]:
+            previews.append([_draw_cross(img), cap + " (excluded)"])
+        else:
+            previews.append([img, cap])
+    return previews, excluded
+
+
+def _generate_filtered_excel(data, excluded):
+    if not data:
+        return None
+    excluded = excluded or []
+    fnames, Ls, Cs = [], [], []
+    for i, name in enumerate(data['filenames']):
+        if i < len(excluded) and excluded[i]:
+            continue
+        fnames.append(name)
+        Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
+        Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
+    out_bytes = write_lengths_to_excel_bytes(fnames, Ls, Cs, data.get('threshold_used', False), data.get('threshold_value', 0.0), data.get('boxplot_png', None))
+    tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data_filtered.xlsx")
+    with open(out_xlsx, "wb") as f:
+        f.write(out_bytes.getvalue())
+    return out_xlsx
 
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
@@ -332,6 +400,10 @@ with gr.Blocks() as demo:
     # When user uploads via button, store them and update the compact summary
     upload_btn.upload(fn=lambda f: (f, summarize_files(f)), inputs=upload_btn, outputs=[files_state, files_summary])
 
+    # Hidden states for interactive filtering (populated after Run)
+    data_state = gr.State(None)
+    excluded_state = gr.State([])
+
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
         chk_len  = gr.Checkbox(value=True, label="Process Length")
@@ -347,20 +419,27 @@ with gr.Blocks() as demo:
 
     with gr.Row():
         out_file = gr.File(label="Download results (.xlsx)")
+        gen_filtered_btn = gr.Button("Generate Filtered Excel")
 
     with gr.Accordion("Results previews", open=True):
         with gr.Row():
             out_box = gr.Image(label="Box plots", type="numpy")
         with gr.Row():
-            gallery = gr.Gallery(label="Example segmentations (first 5)", columns=5, height="auto")
+            gallery = gr.Gallery(label="Segmentations (click to toggle exclude)", columns=5, height="auto")
         filenames_list = gr.Markdown("")
 
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
         inputs=[folder, files_state, chk_curv, chk_len, chk_thr, thr_val, phys_w_um, phys_h_um],
-        outputs=[out_file, out_box, gallery, filenames_list]
+        outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state]
     )
+
+    # When a gallery image is clicked, toggle its exclusion state and update previews
+    gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state])
+
+    # Generate a filtered excel that omits excluded images
+    gen_filtered_btn.click(fn=_generate_filtered_excel, inputs=[data_state, excluded_state], outputs=[out_file])
 
 if __name__ == "__main__":
     demo.launch(share=True)
