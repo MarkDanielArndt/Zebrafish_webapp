@@ -47,14 +47,17 @@ def _to_numpy(img):
             img = ((img - img_min) / denom * 255.0).clip(0,255).astype(np.uint8)
     return img
 
-def _make_boxplots_image(fish_lengths, curvatures):
-    fig = plt.figure(figsize=(10,5))
-    plt.subplot(1,2,1)
+def _make_boxplots_image(fish_lengths, curvatures, ratios):
+    fig = plt.figure(figsize=(15,5))
+    plt.subplot(1,3,1)
     if fish_lengths: plt.boxplot(fish_lengths, vert=True, patch_artist=True)
     plt.title("Fish Lengths"); plt.ylabel("Length (µm)")
-    plt.subplot(1,2,2)
+    plt.subplot(1,3,2)
     if curvatures: plt.boxplot(curvatures, vert=True, patch_artist=True)
     plt.title("Curvatures"); plt.ylabel("Curvature")
+    plt.subplot(1,3,3)
+    if ratios: plt.boxplot(ratios, vert=True, patch_artist=True)
+    plt.title("Length/Straight Length Ratio"); plt.ylabel("Ratio")
     img_bytes = io.BytesIO()
     plt.tight_layout()
     plt.savefig(img_bytes, format='png', bbox_inches='tight')
@@ -62,17 +65,18 @@ def _make_boxplots_image(fish_lengths, curvatures):
     img_bytes.seek(0)
     return img_bytes.getvalue()
 
-def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_used, threshold_value, boxplot_png_bytes):
+def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, threshold_used, threshold_value, boxplot_png_bytes):
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = "Fish Data"
-    sh.append(["Filename", "Fish Length (µm)", "Curvature"])
+    sh.append(["Filename", "Fish Length (µm)", "Curvature", "Length/Straight Length Ratio"])
     for i, fname in enumerate(filenames):
         L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
         c = curvatures[i] if i < len(curvatures) else "N/A"
+        r = ratios[i] if i < len(ratios) else "N/A"
         if c == 5:
             c = "Not Classified"
-        sh.append([fname, L, c])
+        sh.append([fname, L, c, r])
 
     def _stats(vals):
         if not vals: return ("N/A",)*5
@@ -86,6 +90,7 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_
 
     medL,p25L,p75L,meanL,stdL = _stats(fish_lengths)
     medC,p25C,p75C,meanC,stdC = _stats(curvatures)
+    medR,p25R,p75R,meanR,stdR = _stats(ratios)
     sh.append([])
     if threshold_used:
         sh.append([f"Threshold used; statistics may be unreliable (threshold: {threshold_value})"])
@@ -96,6 +101,9 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, threshold_
     sh.append(["Median Curvature", medC]); sh.append(["25th Percentile Curvature", p25C])
     sh.append(["75th Percentile Curvature", p75C]); sh.append(["Mean Curvature", meanC])
     sh.append(["Standard Deviation Curvature", stdC])
+    sh.append(["Median Ratio", medR]); sh.append(["25th Percentile Ratio", p25R])
+    sh.append(["75th Percentile Ratio", p75R]); sh.append(["Mean Ratio", meanR])
+    sh.append(["Standard Deviation Ratio", stdR])
     sh.append([]); sh.append(["Class Distribution"])
     cls_counts = [0,0,0,0,0]
     for c in curvatures:
@@ -246,7 +254,7 @@ def process(folder,
     phys_w_um_user = _safe_float(physical_horizontal_um_str, default=None)
     phys_h_um_user = _safe_float(physical_vertical_um_str, default=None)
 
-    fish_lengths, curvatures, previews = [], [], []
+    fish_lengths, curvatures, ratios, previews = [], [], [], []
     for i, seg_mask in enumerate(segmented_images):
         # Per-image pixel scales derived from user-provided physical distances
         h, w = seg_mask.shape[:2]
@@ -269,14 +277,21 @@ def process(folder,
             try:
                 seg_mask_bin = seg_mask > 0
                 spacing = (y_scale, x_scale)
-                length = tube_length_border2border(seg_mask_bin, spacing=spacing, return_path=False, return_skeleton=False)
+                length, straight_length = tube_length_border2border(seg_mask_bin, spacing=spacing, return_path=False, return_skeleton=False)
                 fish_lengths.append(float(length))
+                # Calculate ratio, avoiding division by zero
+                if straight_length > 0:
+                    ratio = float(length) / float(straight_length)
+                else:
+                    ratio = 0.0
+                ratios.append(ratio)
             except Exception as e:
                 print(f"Error calculating length for image {i}: {e}")
                 # Fallback to old method if needed
                 try:
                     L, _ = get_fish_length_circles_fixed(seg_mask, phys_w_um, phys_h_um, circle_dia=15)
                     fish_lengths.append(float(L))
+                    ratios.append(0.0)  # No ratio available for fallback method
                 except Exception:
                     pass
 
@@ -297,9 +312,9 @@ def process(folder,
         except Exception:
             pass
 
-    boxplot_png = _make_boxplots_image(fish_lengths, curvatures)
+    boxplot_png = _make_boxplots_image(fish_lengths, curvatures, ratios)
     boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
-    out_bytes = write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, use_threshold, threshold_value, boxplot_png)
+    out_bytes = write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, use_threshold, threshold_value, boxplot_png)
     tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data.xlsx")
     with open(out_xlsx, "wb") as f: f.write(out_bytes.getvalue())
     # Prepare state for interactive filtering
@@ -315,6 +330,7 @@ def process(folder,
         'filenames': filenames,
         'fish_lengths': fish_lengths,
         'curvatures': curvatures,
+        'ratios': ratios,
         'boxplot_png': boxplot_png,
         'threshold_used': use_threshold,
         'threshold_value': threshold_value,
@@ -405,14 +421,15 @@ def _generate_filtered_excel(data, excluded):
     if not data:
         return None
     excluded = excluded or []
-    fnames, Ls, Cs = [], [], []
+    fnames, Ls, Cs, Rs = [], [], [], []
     for i, name in enumerate(data['filenames']):
         if i < len(excluded) and excluded[i]:
             continue
         fnames.append(name)
         Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
         Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
-    out_bytes = write_lengths_to_excel_bytes(fnames, Ls, Cs, data.get('threshold_used', False), data.get('threshold_value', 0.0), data.get('boxplot_png', None))
+        Rs.append(data['ratios'][i] if i < len(data['ratios']) else "N/A")
+    out_bytes = write_lengths_to_excel_bytes(fnames, Ls, Cs, Rs, data.get('threshold_used', False), data.get('threshold_value', 0.0), data.get('boxplot_png', None))
     tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data_filtered.xlsx")
     with open(out_xlsx, "wb") as f:
         f.write(out_bytes.getvalue())

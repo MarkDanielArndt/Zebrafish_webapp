@@ -29,10 +29,16 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     spacing: (dy, dx) in physical units
     return_path: return (N,2) array of [row,col]
     return_skeleton: return a bool image with only the centerline path
+    
+    Returns:
+        length: total path length along centerline
+        straight_length: straight-line distance between start and end points
+        [optional] path: coordinates of the centerline path
+        [optional] skel_main: skeleton image
     """
     mask = mask.astype(bool)
     if mask.sum() == 0:
-        out = (0.0,)
+        out = (0.0, 0.0,)
         if return_path: out += (np.zeros((0, 2), dtype=int),)
         if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
         return out[0] if len(out) == 1 else out
@@ -41,7 +47,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     boundary = mask & ~binary_erosion(mask)
     bcoords = np.argwhere(boundary)
     if len(bcoords) == 0:
-        out = (0.0,)
+        out = (0.0, 0.0,)
         if return_path: out += (np.zeros((0, 2), dtype=int),)
         if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
         return out[0] if len(out) == 1 else out
@@ -84,7 +90,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
 
         path_skel = np.array(mcp_skel.traceback(C), dtype=int)  # C -> ... -> B
         if path_skel.size == 0:
-            out = (0.0,)
+            out = (0.0, 0.0,)
             if return_path: out += (np.zeros((0, 2), dtype=int),)
             if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
             return out[0] if len(out) == 1 else out
@@ -144,11 +150,20 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
     length = float(seg.sum())
 
+    # --- compute straight-line distance between start and end points ---
+    if len(path) >= 2:
+        start_point = path[0].astype(float)
+        end_point = path[-1].astype(float)
+        diff = end_point - start_point
+        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+    else:
+        straight_length = 0.0
+
     skel_main = np.zeros_like(mask, dtype=bool)
     if path.size:
         skel_main[path[:, 0], path[:, 1]] = True
 
-    out = (length,)
+    out = (length, straight_length,)
     if return_path: out += (path,)
     if return_skeleton: out += (skel_main,)
     return out[0] if len(out) == 1 else out
