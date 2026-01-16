@@ -21,7 +21,7 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 from huggingface_hub import hf_hub_download
 
-def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False):
+def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False):
     """
     Border-to-border, branch-free centerline length for a tube-like binary mask.
 
@@ -29,12 +29,16 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     spacing: (dy, dx) in physical units
     return_path: return (N,2) array of [row,col]
     return_skeleton: return a bool image with only the centerline path
+    return_straight_line: return the two endpoints of the longest straight line
+    return_extensions: return boolean array indicating which path points are extensions
     
     Returns:
         length: total path length along centerline
-        straight_length: straight-line distance between start and end points
+        straight_length: longest straight-line distance between any two border points
         [optional] path: coordinates of the centerline path
         [optional] skel_main: skeleton image
+        [optional] straight_line_points: tuple of (point1, point2) for longest line
+        [optional] extension_mask: boolean array where True = extension, False = skeleton
     """
     mask = mask.astype(bool)
     if mask.sum() == 0:
@@ -74,6 +78,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         p1 = tuple(bcoords[np.argmin(proj)])
         p2 = tuple(bcoords[np.argmax(proj)])
         path = np.array([p1, p2], dtype=int)
+        extension_mask = np.zeros(len(path), dtype=bool)
     else:
         # --- diameter path on skeleton (branch-free polyline) ---
         cost_skel = np.where(skel, 1.0, np.inf)
@@ -94,26 +99,100 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
             if return_path: out += (np.zeros((0, 2), dtype=int),)
             if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
             return out[0] if len(out) == 1 else out
+        
+        # --- Smooth the skeleton path to reduce sharp turns, especially at thick ends ---
+        def smooth_skeleton_path(path, dist_map, window=15, end_weight=10.0):
+            """
+            Smooth skeleton path with extra emphasis on straightening at the ends.
+            Uses distance transform to weight smoothing - more smoothing where tube is thicker.
+            """
+            if len(path) < 10:
+                return path
+            
+            path_smooth = path.astype(float).copy()
+            n = len(path)
+            
+            # Compute thickness at each point
+            thickness = np.array([dist_map[tuple(p)] for p in path])
+            thickness_norm = thickness / (thickness.max() + 1e-6)
+            
+            # Apply Gaussian-like smoothing with position-dependent weight
+            for i in range(n):
+                # Distance from ends (normalized)
+                dist_from_start = i / n
+                dist_from_end = (n - 1 - i) / n
+                end_proximity = 1.0 - min(dist_from_start, dist_from_end) * 2  # 1 at ends, 0 at middle
+                end_proximity = max(0, end_proximity)
+                
+                # Smoothing strength: higher at thick parts and at ends
+                smooth_weight = 0.3 + 0.5 * thickness_norm[i] + end_weight * end_proximity
+                smooth_weight = min(smooth_weight, 1.0)
+                
+                # Define window around current point
+                half_win = window // 2
+                start_idx = max(0, i - half_win)
+                end_idx = min(n, i + half_win + 1)
+                
+                if end_idx - start_idx > 2:
+                    # Compute weighted average of nearby points
+                    local_points = path[start_idx:end_idx].astype(float)
+                    weights = np.exp(-0.5 * ((np.arange(len(local_points)) - (i - start_idx)) / (half_win/2)) ** 2)
+                    weights /= weights.sum()
+                    
+                    smoothed_point = (weights[:, None] * local_points).sum(axis=0)
+                    path_smooth[i] = smooth_weight * smoothed_point + (1 - smooth_weight) * path[i]
+            
+            # Round and convert back to int
+            path_smooth = np.round(path_smooth).astype(int)
+            
+            # Ensure all points are within bounds and on the mask
+            path_smooth[:, 0] = np.clip(path_smooth[:, 0], 0, mask.shape[0] - 1)
+            path_smooth[:, 1] = np.clip(path_smooth[:, 1], 0, mask.shape[1] - 1)
+            
+            return path_smooth
+        
+        path_skel = smooth_skeleton_path(path_skel, dist_skel, window=60, end_weight=10.0)
 
-        # --- pick boundary endpoints in the *outward* direction of the skeleton path ---
-        def pick_boundary_endpoint(end_rc, dir_vec, search_r):
+        # --- ray-cast from skeleton endpoints to find boundary in straight line ---
+        def raycast_to_boundary(skel_point, dir_vec):
+            """
+            Ray-cast from skeleton endpoint in the given direction to find boundary point.
+            Returns the boundary point where the ray exits the mask.
+            """
             dir_norm = np.linalg.norm(dir_vec)
             if dir_norm < 1e-6:
                 # fallback: nearest boundary
-                _, idx = btree.query(end_rc, k=1)
+                _, idx = btree.query(skel_point, k=1)
                 return tuple(bcoords[idx])
-            d = dir_vec / dir_norm
-
-            idxs = btree.query_ball_point(end_rc, r=search_r)
-            if len(idxs) == 0:
-                _, idx = btree.query(end_rc, k=1)
-                return tuple(bcoords[idx])
-
-            cand = bcoords[idxs]
-            v = cand - np.array(end_rc)[None, :]
-            score = v @ d  # projection along outward direction
-            best = cand[np.argmax(score)]
-            return tuple(best)
+            
+            # Normalize direction
+            direction = dir_vec / dir_norm
+            
+            # Ray-cast from skeleton point outward
+            current = np.array(skel_point, dtype=float)
+            step_size = 0.5  # sub-pixel steps for accuracy
+            max_steps = int(max(mask.shape) * 2)  # safety limit
+            
+            for _ in range(max_steps):
+                current += direction * step_size
+                
+                # Check if we're out of bounds
+                r, c = int(round(current[0])), int(round(current[1]))
+                if r < 0 or r >= mask.shape[0] or c < 0 or c >= mask.shape[1]:
+                    # Hit image boundary, backtrack slightly
+                    current -= direction * step_size
+                    break
+                
+                # Check if we've exited the mask
+                if not mask[r, c]:
+                    # We've left the mask, backtrack to last valid point
+                    current -= direction * step_size
+                    break
+            
+            # Find the nearest boundary point to where our ray ended
+            ray_end = current
+            _, idx = btree.query(ray_end, k=1)
+            return tuple(bcoords[idx])
 
         n = len(path_skel)
         step = min(10, n - 1)
@@ -121,27 +200,66 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         # outward direction at start (from inside towards border)
         start = tuple(path_skel[0])
         dir_start = path_skel[0] - path_skel[step]
-        r_start = max(5.0, 2.5 * float(dist_skel[start]))  # pixels
-        b1 = pick_boundary_endpoint(start, dir_start, r_start)
+        b1 = raycast_to_boundary(start, dir_start)
 
         # outward direction at end
         end = tuple(path_skel[-1])
         dir_end = path_skel[-1] - path_skel[-1 - step]
-        r_end = max(5.0, 2.5 * float(dist_skel[end]))
-        b2 = pick_boundary_endpoint(end, dir_end, r_end)
+        b2 = raycast_to_boundary(end, dir_end)
 
-        # --- recompute border-to-border path inside mask, biased to center ---
-        dist = distance_transform_edt(mask)  # pixels
-        eps = 1e-3
-        cost = np.where(mask, 1.0 / (dist + eps), np.inf)  # prefer center (large dist)
-
-        mcp = MCP_Geometric(cost, fully_connected=True)
-        mcp.find_costs([b1])
-        path = np.array(mcp.traceback(b2), dtype=int)  # b2 -> ... -> b1
-
-        # ensure exact boundary endpoints are included
-        if path.size == 0:
-            path = np.array([b1, b2], dtype=int)
+        # --- extend skeleton path directly to boundaries ---
+        # Use straight-line extension from skeleton endpoints to boundary points
+        def extend_to_boundary(skel_point, boundary_point):
+            """Create straight line from skeleton endpoint to boundary point"""
+            sp = np.array(skel_point, dtype=float)
+            bp = np.array(boundary_point, dtype=float)
+            direction = bp - sp
+            dist = np.linalg.norm(direction)
+            if dist < 1e-6:
+                return np.array([skel_point], dtype=int)
+            
+            # Number of points for interpolation - straight line regardless of mask
+            n_points = max(2, int(np.ceil(dist)))
+            t = np.linspace(0, 1, n_points)
+            extension = sp[None, :] + t[:, None] * direction[None, :]
+            extension = np.round(extension).astype(int)
+            
+            # Clip to image bounds only
+            extension[:, 0] = np.clip(extension[:, 0], 0, mask.shape[0] - 1)
+            extension[:, 1] = np.clip(extension[:, 1], 0, mask.shape[1] - 1)
+            
+            return extension
+        
+        # Extend from start
+        ext_start = extend_to_boundary(start, b1)
+        # Extend from end
+        ext_end = extend_to_boundary(end, b2)
+        
+        # Track which parts are extensions
+        len_ext_start = len(ext_start)
+        len_skel = len(path_skel)
+        len_ext_end = len(ext_end)
+        
+        # Combine: boundary -> extension -> skeleton -> extension -> boundary
+        if len(ext_start) > 1:
+            ext_start = ext_start[::-1]  # reverse to go from boundary toward skeleton
+        if len(ext_end) > 1:
+            ext_end = ext_end[1:]  # skip first point (already in skeleton)
+        
+        # Build complete path
+        path = np.vstack([ext_start, path_skel, ext_end])
+        
+        # Create extension mask
+        extension_mask = np.zeros(len(path), dtype=bool)
+        extension_mask[:len(ext_start)] = True
+        if len(ext_end) > 1:
+            extension_mask[-len(ext_end)+1:] = True
+        
+        # Remove any duplicate consecutive points
+        mask_diff = np.any(np.diff(path, axis=0) != 0, axis=1)
+        keep_indices = np.concatenate([[True], mask_diff])
+        path = path[keep_indices]
+        extension_mask = extension_mask[keep_indices]
 
     # --- compute physical length along the (branch-free) path ---
     dy, dx = spacing
@@ -150,12 +268,14 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
     length = float(seg.sum())
 
-    # --- compute straight-line distance between start and end points ---
+    # --- compute straight-line distance between start and end points of path ---
+    straight_line_points = None
     if len(path) >= 2:
         start_point = path[0].astype(float)
         end_point = path[-1].astype(float)
         diff = end_point - start_point
         straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+        straight_line_points = (tuple(path[0]), tuple(path[-1]))
     else:
         straight_length = 0.0
 
@@ -166,7 +286,10 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     out = (length, straight_length,)
     if return_path: out += (path,)
     if return_skeleton: out += (skel_main,)
+    if return_straight_line: out += (straight_line_points,)
+    if return_extensions: out += (extension_mask,)
     return out
+
 
 def normalize_images(data):
         # Check if data contains np.arrays, if yes, directly normalize them
