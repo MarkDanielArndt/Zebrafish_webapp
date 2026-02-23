@@ -8,28 +8,84 @@ from huggingface_hub import hf_hub_download
 
 target_size = (256, 256)
 
-def segmentation_pipeline(folder_path):
+def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"):
     """
-    Perform segmentation on all images in the specified folder using the Hugging Face Hub model.
+    Load a binary Unet model from a local path or from Hugging Face Hub.
+    Returns the model instance when successful, otherwise None.
+    """
+    model = Unet(encoder_name="vgg16", encoder_weights="imagenet", in_channels=3, classes=1)
+    resolved_path = None
+
+    if model_path and os.path.exists(model_path):
+        resolved_path = model_path
+    elif repo_id and filename:
+        try:
+            resolved_path = hf_hub_download(repo_id=repo_id, filename=filename)
+        except Exception as exc:
+            print(f"Could not download {label} from Hugging Face Hub: {exc}")
+            return None
+    elif filename and os.path.exists(filename):
+        resolved_path = filename
+
+    if not resolved_path:
+        print(f"{label.capitalize()} not found.")
+        return None
+
+    try:
+        model.load_state_dict(torch.load(resolved_path, map_location=torch.device('cpu')))
+        model.eval()
+        print(f"{label.capitalize()} loaded from {resolved_path}")
+        return model
+    except Exception as exc:
+        print(f"Failed to load {label} from {resolved_path}: {exc}")
+        return None
+
+
+def segmentation_pipeline(
+    folder_path,
+    include_eyes=False,
+    body_repo_id="markdanielarndt/Zebrafish_Segmentation",
+    body_model_filename="best_model_5.pth",
+    eye_model_path=None,
+    eye_repo_id="markdanielarndt/Zebrafish_Eye_Segmentation",
+    eye_model_filename="best_model_eyes_combined_230226.pth",
+):
+    """
+    Perform body segmentation on all images in the specified folder.
+
+    Optional eye segmentation can be enabled by setting include_eyes=True.
+
+    Returns:
+        - default: (original_images, segmented_images, grown_images)
+        - if include_eyes=True: (original_images, segmented_images, grown_images, eyes_images)
     """
     images = load_images_from_path(folder_path)
     segmented_images = []
     grown_images = []
     original_images = []
+    eyes_images = []
 
-    # Build model
-    loaded_model = Unet(encoder_name="vgg16", encoder_weights="imagenet", in_channels=3, classes=1)
-    print("Loading segmentation model from Hugging Face Hub...")
-
-    # Download model weights
-    model_path = hf_hub_download(
-        repo_id="markdanielarndt/Zebrafish_Segmentation",
-        filename="best_model_5.pth"
+    print("Loading body segmentation model...")
+    loaded_model = _load_unet_model(
+        repo_id=body_repo_id,
+        filename=body_model_filename,
+        label="body model",
     )
 
-    loaded_model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
-    loaded_model.eval()
-    print("Segmentation model loaded successfully.")
+    if loaded_model is None:
+        raise RuntimeError("Body segmentation model could not be loaded.")
+
+    eyes_model = None
+    if include_eyes:
+        print("Loading eye segmentation model...")
+        eyes_model = _load_unet_model(
+            model_path=eye_model_path,
+            repo_id=eye_repo_id,
+            filename=eye_model_filename,
+            label="eye model",
+        )
+        if eyes_model is None:
+            print("Eye model unavailable. Returning empty eye masks.")
 
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])
@@ -48,8 +104,19 @@ def segmentation_pipeline(folder_path):
         filled_image = fill_holes(segmented_mask_array)
         grown_image = grow_mask(filled_image)
 
+        if include_eyes:
+            if eyes_model is not None:
+                segmented_eyes, _ = segment_fish(input_image, eyes_model, biggest_only=False)
+                segmented_eyes_array = np.array(segmented_eyes)
+            else:
+                segmented_eyes_array = np.zeros(target_size, dtype=np.uint8)
+            eyes_images.append(segmented_eyes_array)
+
         grown_images.append(grown_image)
         segmented_images.append(filled_image)
         original_images.append(original_image)
+
+    if include_eyes:
+        return original_images, segmented_images, grown_images, eyes_images
 
     return original_images, segmented_images, grown_images
