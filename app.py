@@ -234,7 +234,7 @@ def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, li
     - If `folder_input` is a list/tuple of paths (Gradio folder upload), copy ALL
       of them into a temp dir and return that dir + filenames.
     - If `folder_input` is a string path to a directory, enumerate it.
-    - Otherwise, fall back to `files` (individual uploads) and copy into a temp dir.
+    - Otherwise, fall back to `files` (individual uploads) and copy into a temp dir
     """
     exts = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
 
