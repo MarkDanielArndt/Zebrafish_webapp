@@ -106,7 +106,7 @@ def segmentation_pipeline(
 
         if include_eyes:
             if eyes_model is not None:
-                segmented_eyes, _ = segment_fish(input_image, eyes_model, biggest_only=False)
+                segmented_eyes, _ = segment_fish(input_image, eyes_model, biggest_only=True)
                 segmented_eyes_array = np.array(segmented_eyes)
             else:
                 segmented_eyes_array = np.zeros(target_size, dtype=np.uint8)
