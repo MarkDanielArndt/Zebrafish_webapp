@@ -167,7 +167,7 @@ def _resize_max(img: np.ndarray, max_w: int = 640) -> np.ndarray:
     scale = max_w / float(w); new_w, new_h = int(w*scale), int(h*scale)
     return np.array(PILImage.fromarray(img).resize((new_w, new_h), resample=PILImage.BILINEAR))
 
-def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None) -> np.ndarray:
+def _make_seg_overlay(original_img, seg_mask) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
     if mask.shape[:2] != base.shape[:2]:
@@ -178,44 +178,7 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
     red = np.zeros_like(overlay); red[..., 0] = 150
     m = (mask > 0)[..., None].astype(np.float32)
     overlay = overlay * (1 - alpha * m) + red * (alpha * m)
-    if eye_mask is not None:
-        eye_norm = _normalize_mask(eye_mask)
-        if eye_norm.shape[:2] != base.shape[:2]:
-            eye_norm = np.array(PILImage.fromarray(eye_norm).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
-        orange = np.zeros_like(overlay)
-        orange[..., 0] = 230
-        orange[..., 1] = 120
-        em = (eye_norm > 0)[..., None].astype(np.float32)
-        overlay = overlay * (1 - 0.35 * em) + orange * (0.35 * em)
-
     overlay = overlay.clip(0,255).astype(np.uint8)
-
-    h_mask, w_mask = _normalize_mask(seg_mask).shape[:2]
-    h_base, w_base = overlay.shape[:2]
-    sy = h_base / float(max(1, h_mask))
-    sx = w_base / float(max(1, w_mask))
-
-    if path_points is not None:
-        try:
-            p = np.asarray(path_points)
-            if p.ndim == 2 and p.shape[1] == 2 and len(p) >= 2:
-                pts = np.stack([
-                    np.clip(np.round(p[:, 1] * sx), 0, w_base - 1),
-                    np.clip(np.round(p[:, 0] * sy), 0, h_base - 1),
-                ], axis=1).astype(np.int32)
-                cv2.polylines(overlay, [pts], isClosed=False, color=(0, 255, 255), thickness=2)
-        except Exception:
-            pass
-
-    if straight_line_points is not None:
-        try:
-            (r1, c1), (r2, c2) = straight_line_points
-            p1 = (int(np.clip(round(c1 * sx), 0, w_base - 1)), int(np.clip(round(r1 * sy), 0, h_base - 1)))
-            p2 = (int(np.clip(round(c2 * sx), 0, w_base - 1)), int(np.clip(round(r2 * sy), 0, h_base - 1)))
-            cv2.line(overlay, p1, p2, (255, 0, 255), 2)
-        except Exception:
-            pass
-
     return _resize_max(overlay)
 
 def _shorten_name(name: str, max_chars: int = 22) -> str:
@@ -234,7 +197,7 @@ def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, li
     - If `folder_input` is a list/tuple of paths (Gradio folder upload), copy ALL
       of them into a temp dir and return that dir + filenames.
     - If `folder_input` is a string path to a directory, enumerate it.
-    - Otherwise, fall back to `files` (individual uploads) and copy into a temp dir
+    - Otherwise, fall back to `files` (individual uploads) and copy into a temp dir.
     """
     exts = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
 
@@ -319,11 +282,7 @@ def process(folder,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
-    if process_length:
-        original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(work_dir, include_eyes=True)
-    else:
-        original_images, segmented_images, grown_images = segmentation_pipeline(work_dir)
-        eyes_images = [None] * len(segmented_images)
+    original_images, segmented_images, grown_images = segmentation_pipeline(work_dir)
     model = _ensure_model()
 
     # Parse physical distances (µm) for full image width/height from user
@@ -332,10 +291,6 @@ def process(folder,
 
     fish_lengths, curvatures, ratios, previews = [], [], [], []
     for i, seg_mask in enumerate(segmented_images):
-        path_points = None
-        straight_line_points = None
-        eye_mask_for_vis = eyes_images[i] if i < len(eyes_images) else None
-
         # Per-image pixel scales derived from user-provided physical distances
         h, w = seg_mask.shape[:2]
         # Default to pixel units if user did not provide values
@@ -356,20 +311,8 @@ def process(folder,
             # Use the new tube_length_border2border function
             try:
                 seg_mask_bin = seg_mask > 0
-                eye_mask_bin = None
-                if eye_mask_for_vis is not None:
-                    eye_mask_bin = _normalize_mask(eye_mask_for_vis) > 0
                 spacing = (y_scale, x_scale)
-                length, straight_length, path_points, straight_line_points, eye_info = tube_length_border2border(
-                    seg_mask_bin,
-                    spacing=spacing,
-                    return_path=True,
-                    return_straight_line=True,
-                    mask_eye=eye_mask_bin,
-                    return_eye_info=True,
-                )
-                if eye_info is not None and eye_info.get("eye_mask") is not None:
-                    eye_mask_for_vis = eye_info.get("eye_mask")
+                length, straight_length = tube_length_border2border(seg_mask_bin, spacing=spacing, return_path=False, return_skeleton=False)
                 fish_lengths.append(float(length))
                 # Calculate ratio only if checkbox is enabled
                 if process_ratio:
@@ -398,13 +341,7 @@ def process(folder,
                 pass
 
         try:
-            overlay = _make_seg_overlay(
-                original_images[i],
-                seg_mask,
-                path_points=path_points,
-                straight_line_points=straight_line_points,
-                eye_mask=eye_mask_for_vis,
-            )
+            overlay = _make_seg_overlay(original_images[i], seg_mask)
             original_name = filenames[i] if i < len(filenames) else f"image_{i}"
             short = _shorten_name(original_name, max_chars=22)
             # embed index into caption so selection handlers can identify images robustly

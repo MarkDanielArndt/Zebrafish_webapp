@@ -21,129 +21,7 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 from huggingface_hub import hf_hub_download
 
-def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0)):
-    """
-    Compute eye mask, centroid, physical area, and physical diameter from an eye mask.
-
-    Args:
-        mask_eye: 2D eye mask/probability map.
-        mask_fish: optional 2D fish mask to constrain eye pixels to fish body.
-        spacing: (dy, dx) physical spacing per pixel.
-
-    Returns:
-        dict with keys:
-            eye_mask: bool array (same shape as input)
-            eye_centroid: np.array([row, col]) or None
-            eye_area: float (in spacing units squared)
-            eye_diameter: float (in spacing units)
-            eye_diameter_points: tuple((r1,c1),(r2,c2)) or None
-    """
-    if mask_eye is None:
-        return {
-            "eye_mask": None,
-            "eye_centroid": None,
-            "eye_area": 0.0,
-            "eye_diameter": 0.0,
-            "eye_diameter_points": None,
-        }
-
-    eye_raw = np.asarray(mask_eye)
-    if eye_raw.ndim != 2 or eye_raw.size == 0:
-        return {
-            "eye_mask": None,
-            "eye_centroid": None,
-            "eye_area": 0.0,
-            "eye_diameter": 0.0,
-            "eye_diameter_points": None,
-        }
-
-    if eye_raw.dtype == bool:
-        eye_mask = eye_raw.copy()
-    else:
-        eye_raw_float = eye_raw.astype(float)
-        max_val = float(np.nanmax(eye_raw_float)) if eye_raw_float.size else 0.0
-        if max_val <= 0.0:
-            return {
-                "eye_mask": np.zeros_like(eye_raw, dtype=bool),
-                "eye_centroid": None,
-                "eye_area": 0.0,
-                "eye_diameter": 0.0,
-                "eye_diameter_points": None,
-            }
-        eye_mask = eye_raw_float >= (0.5 * max_val)
-
-    if mask_fish is not None:
-        fish_mask = np.asarray(mask_fish).astype(bool)
-        if fish_mask.shape == eye_mask.shape:
-            eye_mask = eye_mask & fish_mask
-
-    if not eye_mask.any():
-        return {
-            "eye_mask": eye_mask,
-            "eye_centroid": None,
-            "eye_area": 0.0,
-            "eye_diameter": 0.0,
-            "eye_diameter_points": None,
-        }
-
-    ecoords = np.argwhere(eye_mask)
-    if len(ecoords) == 0:
-        return {
-            "eye_mask": eye_mask,
-            "eye_centroid": None,
-            "eye_area": 0.0,
-            "eye_diameter": 0.0,
-            "eye_diameter_points": None,
-        }
-
-    eye_centroid = ecoords.mean(axis=0)
-    dy, dx = spacing
-    eye_area = float(len(ecoords) * dy * dx)
-
-    eye_boundary = eye_mask & ~binary_erosion(eye_mask)
-    dcoords = np.argwhere(eye_boundary)
-    if len(dcoords) < 2:
-        dcoords = ecoords
-
-    eye_diameter = 0.0
-    eye_diameter_points = None
-    if len(dcoords) >= 2:
-        dcoords_phys = dcoords.astype(float).copy()
-        dcoords_phys[:, 0] *= dy
-        dcoords_phys[:, 1] *= dx
-
-        mean_phys = dcoords_phys.mean(axis=0)
-        centered = dcoords_phys - mean_phys
-        cov = np.cov(centered.T)
-        evals, evecs = np.linalg.eigh(cov)
-        major_vec = evecs[:, int(np.argmax(evals))]
-        major_vec /= (np.linalg.norm(major_vec) + 1e-12)
-
-        proj = centered @ major_vec
-        i_min = int(np.argmin(proj))
-        i_max = int(np.argmax(proj))
-        p0_phys = dcoords_phys[i_min]
-        p1_phys = dcoords_phys[i_max]
-
-        eye_diameter = float(np.linalg.norm(p1_phys - p0_phys))
-
-        p0_pix = np.array([p0_phys[0] / dy, p0_phys[1] / dx])
-        p1_pix = np.array([p1_phys[0] / dy, p1_phys[1] / dx])
-        eye_diameter_points = (
-            tuple(np.round(p0_pix).astype(int)),
-            tuple(np.round(p1_pix).astype(int)),
-        )
-
-    return {
-        "eye_mask": eye_mask,
-        "eye_centroid": eye_centroid,
-        "eye_area": eye_area,
-        "eye_diameter": eye_diameter,
-        "eye_diameter_points": eye_diameter_points,
-    }
-
-
-def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False, mask_eye=None, return_eye_info=False):
+def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False):
     """
     Border-to-border, branch-free centerline length for a tube-like binary mask.
 
@@ -153,8 +31,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     return_skeleton: return a bool image with only the centerline path
     return_straight_line: return the two endpoints of the longest straight line
     return_extensions: return boolean array indicating which path points are extensions
-    mask_eye: optional 2D binary eye mask; if provided, path starts at the fish border pixel closest to eye mask
-    return_eye_info: return eye-derived diagnostics computed inside this function
     
     Returns:
         length: total path length along centerline
@@ -163,29 +39,12 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         [optional] skel_main: skeleton image
         [optional] straight_line_points: tuple of (point1, point2) for longest line
         [optional] extension_mask: boolean array where True = extension, False = skeleton
-        [optional] eye_info: dict with eye_mask, eye_centroid, closest_border_to_eye,
-                             eye_diameter, eye_area, eye_diameter_points
     """
     mask = mask.astype(bool)
-    eye_mask_used = np.zeros_like(mask, dtype=bool)
-    eye_centroid = None
-    closest_border_to_eye = None
-    eye_diameter = 0.0
-    eye_area = 0.0
-    eye_diameter_points = None
     if mask.sum() == 0:
         out = (0.0, 0.0,)
         if return_path: out += (np.zeros((0, 2), dtype=int),)
         if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
-        if return_eye_info:
-            out += ({
-                "eye_mask": eye_mask_used,
-                "eye_centroid": eye_centroid,
-                "closest_border_to_eye": closest_border_to_eye,
-                "eye_diameter": eye_diameter,
-                "eye_area": eye_area,
-                "eye_diameter_points": eye_diameter_points,
-            },)
         return out[0] if len(out) == 1 else out
 
     # --- boundary pixels ---
@@ -195,15 +54,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         out = (0.0, 0.0,)
         if return_path: out += (np.zeros((0, 2), dtype=int),)
         if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
-        if return_eye_info:
-            out += ({
-                "eye_mask": eye_mask_used,
-                "eye_centroid": eye_centroid,
-                "closest_border_to_eye": closest_border_to_eye,
-                "eye_diameter": eye_diameter,
-                "eye_area": eye_area,
-                "eye_diameter_points": eye_diameter_points,
-            },)
         return out[0] if len(out) == 1 else out
     btree = cKDTree(bcoords)
 
@@ -248,15 +98,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
             out = (0.0, 0.0,)
             if return_path: out += (np.zeros((0, 2), dtype=int),)
             if return_skeleton: out += (np.zeros_like(mask, dtype=bool),)
-            if return_eye_info:
-                out += ({
-                    "eye_mask": eye_mask_used,
-                    "eye_centroid": eye_centroid,
-                    "closest_border_to_eye": closest_border_to_eye,
-                    "eye_diameter": eye_diameter,
-                    "eye_area": eye_area,
-                    "eye_diameter_points": eye_diameter_points,
-                },)
             return out[0] if len(out) == 1 else out
         
         # --- Smooth the skeleton path to reduce sharp turns, especially at thick ends ---
@@ -420,132 +261,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         path = path[keep_indices]
         extension_mask = extension_mask[keep_indices]
 
-    # --- optional: force start point to be the border pixel closest to eye mask ---
-    if mask_eye is not None and len(path) >= 2:
-        eye_metrics = compute_eye_metrics(mask_eye, mask_fish=mask, spacing=spacing)
-        eye_mask = eye_metrics["eye_mask"]
-        eye_centroid = eye_metrics["eye_centroid"]
-        eye_diameter = float(eye_metrics["eye_diameter"])
-        eye_area = float(eye_metrics["eye_area"])
-        eye_diameter_points = eye_metrics["eye_diameter_points"]
-
-        if eye_mask is not None and eye_mask.any() and len(bcoords) > 0:
-            eye_mask_used = eye_mask.copy()
-            eye_boundary = eye_mask & ~binary_erosion(eye_mask)
-            ecoords = np.argwhere(eye_boundary)
-            if len(ecoords) == 0:
-                ecoords = np.argwhere(eye_mask)
-
-            if len(ecoords) > 0:
-                eye_centroid = ecoords.mean(axis=0)
-                dist_be = cdist(bcoords.astype(float), ecoords.astype(float))
-                closest_border = bcoords[np.argmin(dist_be.min(axis=1))].astype(int)
-                closest_border_to_eye = closest_border
-
-                d0 = np.linalg.norm(path[0].astype(float) - closest_border.astype(float))
-                d1 = np.linalg.norm(path[-1].astype(float) - closest_border.astype(float))
-                if d1 < d0:
-                    path = path[::-1]
-                    extension_mask = extension_mask[::-1]
-
-                if len(path) >= 2:
-                    d_path = np.linalg.norm(path.astype(float) - closest_border.astype(float), axis=1)
-                    idx_near = int(np.argmin(d_path))
-
-                    if idx_near > (len(path) // 2):
-                        path = path[::-1]
-                        extension_mask = extension_mask[::-1]
-                        d_path = np.linalg.norm(path.astype(float) - closest_border.astype(float), axis=1)
-                        idx_near = int(np.argmin(d_path))
-
-                    if idx_near > 0:
-                        path = path[idx_near:]
-                        extension_mask = extension_mask[idx_near:]
-
-                    n_trim_start = min(52, len(path) - 2) if len(path) > 30 else 0
-                    if n_trim_start > 0:
-                        kept = path[n_trim_start:]
-                        kept_ext = extension_mask[n_trim_start:]
-                    else:
-                        kept = path.copy()
-                        kept_ext = extension_mask.copy()
-
-                    anchor = closest_border.astype(float)
-                    join = kept[0].astype(float)
-                    chord = join - anchor
-                    d01 = np.linalg.norm(chord)
-
-                    if d01 > 1e-6:
-                        t0 = chord / (d01 + 1e-9)
-
-                        look_ahead = min(len(kept) - 1, 6)
-                        t1_vec = kept[look_ahead].astype(float) - join
-                        t1_norm = np.linalg.norm(t1_vec)
-                        if t1_norm < 1e-6:
-                            t1_vec = chord
-                            t1_norm = d01
-                        t1 = t1_vec / (t1_norm + 1e-9)
-
-                        tangent_scale = 0.55 * d01
-                        m0 = t0 * tangent_scale
-                        m1 = t1 * tangent_scale
-
-                        n_bridge = int(np.clip(np.ceil(d01 / 1.2), 8, 30))
-                        t = np.linspace(0.0, 1.0, n_bridge + 1)
-                        h00 = 2 * t**3 - 3 * t**2 + 1
-                        h10 = t**3 - 2 * t**2 + t
-                        h01 = -2 * t**3 + 3 * t**2
-                        h11 = t**3 - t**2
-                        bridge_f = (
-                            h00[:, None] * anchor[None, :]
-                            + h10[:, None] * m0[None, :]
-                            + h01[:, None] * join[None, :]
-                            + h11[:, None] * m1[None, :]
-                        )
-
-                        if len(bridge_f) > 4:
-                            for _ in range(3):
-                                prev = bridge_f.copy()
-                                bridge_f[1:-1] = 0.25 * prev[:-2] + 0.5 * prev[1:-1] + 0.25 * prev[2:]
-
-                        bridge = np.round(bridge_f).astype(int)
-                        bridge[:, 0] = np.clip(bridge[:, 0], 0, mask.shape[0] - 1)
-                        bridge[:, 1] = np.clip(bridge[:, 1], 0, mask.shape[1] - 1)
-
-                        path = np.vstack([bridge, kept[1:]]) if len(kept) > 1 else bridge
-                        extension_mask = (
-                            np.concatenate([
-                                np.ones(len(bridge), dtype=bool),
-                                kept_ext[1:]
-                            ])
-                            if len(kept_ext) > 1
-                            else np.ones(len(bridge), dtype=bool)
-                        )
-
-                    path[0] = closest_border
-                    extension_mask[0] = True
-                    if len(path) >= 6:
-                        smooth_end = min(len(path) - 2, 24)
-                        if smooth_end >= 2:
-                            pf = path.astype(float)
-                            for _ in range(2):
-                                prev = pf.copy()
-                                pf[1:smooth_end + 1] = (
-                                    0.2 * prev[0:smooth_end]
-                                    + 0.6 * prev[1:smooth_end + 1]
-                                    + 0.2 * prev[2:smooth_end + 2]
-                                )
-                            pf[0] = closest_border.astype(float)
-                            path[:smooth_end + 1] = np.round(pf[:smooth_end + 1]).astype(int)
-                            path[:, 0] = np.clip(path[:, 0], 0, mask.shape[0] - 1)
-                            path[:, 1] = np.clip(path[:, 1], 0, mask.shape[1] - 1)
-
-                    if len(path) >= 2:
-                        mask_diff2 = np.any(np.diff(path, axis=0) != 0, axis=1)
-                        keep_indices2 = np.concatenate([[True], mask_diff2])
-                        path = path[keep_indices2]
-                        extension_mask = extension_mask[keep_indices2]
-
     # --- compute physical length along the (branch-free) path ---
     dy, dx = spacing
     pf = path.astype(float)
@@ -573,15 +288,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     if return_skeleton: out += (skel_main,)
     if return_straight_line: out += (straight_line_points,)
     if return_extensions: out += (extension_mask,)
-    if return_eye_info:
-        out += ({
-            "eye_mask": eye_mask_used,
-            "eye_centroid": eye_centroid,
-            "closest_border_to_eye": closest_border_to_eye,
-            "eye_diameter": eye_diameter,
-            "eye_area": eye_area,
-            "eye_diameter_points": eye_diameter_points,
-        },)
     return out
 
 

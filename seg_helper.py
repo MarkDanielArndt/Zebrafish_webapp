@@ -26,7 +26,7 @@ def load_images_from_path(path):
                 print(f"Error loading image {file_name}: {e}")
     return images
 
-def segment_fish(image, model, biggest_only=True):
+def segment_fish(image, model):
     """
     Segment fish from the image using a pre-trained Unet model.
     
@@ -54,24 +54,20 @@ def segment_fish(image, model, biggest_only=True):
     binary_mask = (confidence_map > 127).astype(np.uint8) * 255
     
     # Convert the binary mask to a PIL image
-    if biggest_only:
-        # Find the largest connected component in the binary mask
-        num_labels, labels_im = cv2.connectedComponents(binary_mask)
+    segmented_image = Image.fromarray(binary_mask)
+    # Find the largest connected component in the binary mask
+    num_labels, labels_im = cv2.connectedComponents(binary_mask)
 
-        # Find the largest component
-        largest_component = 1 + np.argmax(np.bincount(labels_im.flat)[1:])
+    # Find the largest component
+    largest_component = 1 + np.argmax(np.bincount(labels_im.flat)[1:])
 
-        # Create a mask for the largest component
-        largest_component_mask = (labels_im == largest_component).astype(np.uint8) * 255
+    # Create a mask for the largest component
+    largest_component_mask = (labels_im == largest_component).astype(np.uint8) * 255
 
-        # Convert the largest component mask to a PIL image
-        segmented_image = Image.fromarray(largest_component_mask)
-    else:
-        # Keep all components
-        segmented_image = Image.fromarray(binary_mask)
+    # Convert the largest component mask to a PIL image
+    segmented_image = Image.fromarray(largest_component_mask)
     
     return segmented_image, confidence_map
-
 
 def fill_holes(mask):
     """
