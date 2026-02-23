@@ -3,6 +3,11 @@ name: Deploy to Hugging Face Space
 on:
   push:
     branches: [ main ]   # or your default branch
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-to-hf-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
