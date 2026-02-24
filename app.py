@@ -465,37 +465,21 @@ def _draw_cross(img_np):
         return img_np
 
 
-def _toggle_exclusion(sel_idx, excluded, data):
-    # sel_idx: index of clicked image (int or list); excluded: list of bools; data: data_state dict
+def _toggle_exclusion(evt: gr.SelectData, excluded, data):
+    # evt: SelectData from gallery click; excluded: list of bools; data: data_state dict
     if data is None:
-        return gr.update(), excluded, data
+        return gr.update(), excluded, data, gr.update()
     # ensure excluded list length
     if excluded is None or len(excluded) != len(data['filenames']):
         excluded = [False] * len(data['filenames'])
-    # sel_idx from gallery.select may be an int, a caption string, or a [image, caption] tuple
-    idx = None
-    try:
-        # direct int (gradio sometimes provides index)
-        idx = int(sel_idx)
-    except Exception:
-        pass
-    if idx is None:
-        # sel_idx may be like [image, caption] or caption string
-        try:
-            if isinstance(sel_idx, (list, tuple)) and len(sel_idx) > 1 and isinstance(sel_idx[1], str):
-                caption = sel_idx[1]
-            elif isinstance(sel_idx, str):
-                caption = sel_idx
-            else:
-                caption = None
-            if caption is not None and ':' in caption:
-                idx = int(caption.split(':', 1)[0])
-        except Exception:
-            idx = None
-    if idx is None:
-        return gr.update(), excluded, data
-    if 0 <= idx < len(excluded):
-        excluded[idx] = not bool(excluded[idx])
+    
+    idx = evt.index  # Use Gradio's SelectData.index directly
+    
+    if idx is None or idx < 0 or idx >= len(excluded):
+        return gr.update(), excluded, data, gr.update()
+    
+    excluded[idx] = not bool(excluded[idx])
+    
     # rebuild previews with cross for excluded and update data state
     previews = []
     originals = data.get('original_previews', data.get('previews', []))
@@ -507,9 +491,15 @@ def _toggle_exclusion(sel_idx, excluded, data):
             previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
         else:
             previews.append([orig_img, f"{i}:{short_cap}"])
+    
     # persist the updated previews in data so subsequent toggles use original images
     data['previews'] = previews
-    return previews, excluded, data
+    
+    # Build checkbox values to sync with excluded state
+    checkbox_values = [f"{i}:{_shorten_name(data['filenames'][i], max_chars=22)}" 
+                      for i in range(len(excluded)) if excluded[i]]
+    
+    return previews, excluded, data, gr.update(value=checkbox_values)
 
 
 def _generate_filtered_excel(data, excluded):
@@ -642,8 +632,8 @@ with gr.Blocks() as demo:
     )
 
     # When a gallery image is clicked, toggle its exclusion state and update previews
-    # Note: the handler returns previews, excluded_state and updated data_state
-    gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state, data_state])
+    # Note: the handler returns previews, excluded_state, updated data_state, and checkbox update
+    gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state, data_state, exclude_checkboxes])
 
     # Checkbox-based exclusion handler (alternative to clicking images)
     exclude_checkboxes.change(fn=_update_from_checkboxes, inputs=[exclude_checkboxes, data_state], outputs=[gallery, excluded_state, data_state])
