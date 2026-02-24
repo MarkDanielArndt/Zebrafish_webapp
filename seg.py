@@ -47,7 +47,7 @@ def segmentation_pipeline(
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
     body_model_filename="best_model_5.pth",
     eye_model_path=None,
-    eye_repo_id="markdanielarndt/Zebrafish_Eye_Segmentation",
+    eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
     eye_model_filename="best_model_eyes_combined_230226.pth",
 ):
     """
@@ -77,7 +77,7 @@ def segmentation_pipeline(
 
     eyes_model = None
     if include_eyes:
-        print("Loading eye segmentation model...")
+        print(f"Loading eye segmentation model from {eye_repo_id}/{eye_model_filename}...")
         eyes_model = _load_unet_model(
             model_path=eye_model_path,
             repo_id=eye_repo_id,
@@ -85,7 +85,9 @@ def segmentation_pipeline(
             label="eye model",
         )
         if eyes_model is None:
-            print("Eye model unavailable. Returning empty eye masks.")
+            print(f"WARNING: Eye model unavailable at {eye_repo_id}/{eye_model_filename}. Returning empty eye masks.")
+        else:
+            print("Eye model loaded successfully!")
 
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])

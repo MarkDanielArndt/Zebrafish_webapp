@@ -320,11 +320,8 @@ def process(folder,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
-    if process_length:
-        original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(work_dir, include_eyes=True)
-    else:
-        original_images, segmented_images, grown_images = segmentation_pipeline(work_dir)
-        eyes_images = [None] * len(segmented_images)
+    # Always enable eye segmentation for visualization
+    original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(work_dir, include_eyes=True)
     model = _ensure_model()
 
     # Parse physical distances (µm) for full image width/height from user
