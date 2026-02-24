@@ -320,7 +320,7 @@ def process(folder,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
-    # Always enable eye segmentation for visualization
+    # Always load eyes for overlay visualization
     original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(work_dir, include_eyes=True)
     model = _ensure_model()
 
@@ -354,20 +354,16 @@ def process(folder,
             # Use the new tube_length_border2border function
             try:
                 seg_mask_bin = seg_mask > 0
-                eye_mask_bin = None
-                if eye_mask_for_vis is not None:
-                    eye_mask_bin = _normalize_mask(eye_mask_for_vis) > 0
                 spacing = (y_scale, x_scale)
-                length, straight_length, path_points, straight_line_points, eye_info = tube_length_border2border(
+                # Don't use eye mask in length calculation (mask_eye=None)
+                length, straight_length, path_points, straight_line_points = tube_length_border2border(
                     seg_mask_bin,
                     spacing=spacing,
                     return_path=True,
                     return_straight_line=True,
-                    mask_eye=eye_mask_bin,
-                    return_eye_info=True,
+                    mask_eye=None,
+                    return_eye_info=False,
                 )
-                if eye_info is not None and eye_info.get("eye_mask") is not None:
-                    eye_mask_for_vis = eye_info.get("eye_mask")
                 fish_lengths.append(float(length))
                 # Calculate ratio only if checkbox is enabled
                 if process_ratio:
