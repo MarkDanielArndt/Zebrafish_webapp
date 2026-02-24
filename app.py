@@ -173,20 +173,21 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
     if mask.shape[:2] != base.shape[:2]:
         mask = np.array(PILImage.fromarray(mask).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
     overlay = base.copy().astype(np.float32)
-    # make the red overlay less bright and slightly more subtle
+    # fish mask overlay in yellow
     alpha = 0.35
-    red = np.zeros_like(overlay); red[..., 0] = 150
+    yellow = np.zeros_like(overlay)
+    yellow[..., 0] = 255
+    yellow[..., 1] = 255
     m = (mask > 0)[..., None].astype(np.float32)
-    overlay = overlay * (1 - alpha * m) + red * (alpha * m)
+    overlay = overlay * (1 - alpha * m) + yellow * (alpha * m)
     if eye_mask is not None:
         eye_norm = _normalize_mask(eye_mask)
         if eye_norm.shape[:2] != base.shape[:2]:
             eye_norm = np.array(PILImage.fromarray(eye_norm).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
-        orange = np.zeros_like(overlay)
-        orange[..., 0] = 230
-        orange[..., 1] = 120
+        red = np.zeros_like(overlay)
+        red[..., 0] = 255
         em = (eye_norm > 0)[..., None].astype(np.float32)
-        overlay = overlay * (1 - 0.35 * em) + orange * (0.35 * em)
+        overlay = overlay * (1 - 0.35 * em) + red * (0.35 * em)
 
     overlay = overlay.clip(0,255).astype(np.uint8)
 
@@ -474,7 +475,7 @@ def _draw_cross(img_np):
 def _toggle_exclusion(sel_idx, excluded, data):
     # sel_idx: index of clicked image (int or list); excluded: list of bools; data: data_state dict
     if data is None:
-        return gr.update(), excluded
+        return gr.update(), excluded, data
     # ensure excluded list length
     if excluded is None or len(excluded) != len(data['filenames']):
         excluded = [False] * len(data['filenames'])
@@ -499,7 +500,7 @@ def _toggle_exclusion(sel_idx, excluded, data):
         except Exception:
             idx = None
     if idx is None:
-        return gr.update(), excluded
+        return gr.update(), excluded, data
     if 0 <= idx < len(excluded):
         excluded[idx] = not bool(excluded[idx])
     # rebuild previews with cross for excluded and update data state
