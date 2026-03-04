@@ -355,6 +355,7 @@ def process(folder,
             try:
                 seg_mask_bin = seg_mask > 0
                 spacing = (y_scale, x_scale)
+                print(f"spacing:{spacing}")
                 # Don't use eye mask in length calculation (mask_eye=None)
                 length, straight_length, path_points, straight_line_points = tube_length_border2border(
                     seg_mask_bin,
