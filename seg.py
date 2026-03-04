@@ -8,7 +8,7 @@ from huggingface_hub import hf_hub_download
 
 target_size = (256, 256)
 
-def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"):
+def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False):
     """
     Load a binary Unet model from a local path or from Hugging Face Hub.
     Returns the model instance when successful, otherwise None.
@@ -20,7 +20,12 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
         resolved_path = model_path
     elif repo_id and filename:
         try:
-            resolved_path = hf_hub_download(repo_id=repo_id, filename=filename)
+            resolved_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                force_download=force_download,
+            )
         except Exception as exc:
             print(f"Could not download {label} from Hugging Face Hub: {exc}")
             return None
@@ -46,6 +51,8 @@ def segmentation_pipeline(
     include_eyes=False,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
     body_model_filename="best_model_7.pth",
+    body_revision="main",
+    body_force_download=True,
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
     eye_model_filename="best_model_eyes_combined_230226.pth",
@@ -65,11 +72,13 @@ def segmentation_pipeline(
     original_images = []
     eyes_images = []
 
-    print("Loading body segmentation model...")
+    print(f"Loading body segmentation model from {body_repo_id}/{body_model_filename} (revision={body_revision}, force_download={body_force_download})...")
     loaded_model = _load_unet_model(
         repo_id=body_repo_id,
         filename=body_model_filename,
         label="body model",
+        revision=body_revision,
+        force_download=body_force_download,
     )
 
     if loaded_model is None:
