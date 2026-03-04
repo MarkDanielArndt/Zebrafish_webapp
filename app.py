@@ -305,7 +305,27 @@ def _safe_float(s, default=None):
     try:
         if s is None: return default
         if isinstance(s, (int, float)): return float(s)
-        s = str(s).strip().replace(",", ".")
+        s = str(s).strip()
+        if not s:
+            return default
+
+        # remove common thousands separators/spaces
+        s = s.replace("\u00A0", "")  # non-breaking space
+        s = s.replace(" ", "")
+        s = s.replace("_", "")
+        s = s.replace("'", "")
+
+        # Handle locale-specific decimal/thousands separators
+        if "," in s and "." in s:
+            # Assume the last separator is the decimal separator
+            if s.rfind(",") > s.rfind("."):
+                s = s.replace(".", "")
+                s = s.replace(",", ".")
+            else:
+                s = s.replace(",", "")
+        elif "," in s:
+            s = s.replace(",", ".")
+
         return float(s)
     except Exception:
         return default
@@ -327,6 +347,23 @@ def process(folder,
     # Parse physical distances (µm) for full image width/height from user
     phys_w_um_user = _safe_float(physical_horizontal_um_str, default=None)
     phys_h_um_user = _safe_float(physical_vertical_um_str, default=None)
+
+    if phys_w_um_user is not None and phys_h_um_user is not None:
+        y_scale_info = phys_h_um_user / 256
+        x_scale_info = phys_w_um_user / 256
+        spacing_info_md = (
+            f"**Spacing used:** custom input | "
+            f"y = {y_scale_info:.4f} µm/pixel, x = {x_scale_info:.4f} µm/pixel "
+            f"(from H={phys_h_um_user:g} µm, W={phys_w_um_user:g} µm over 256 px)"
+        )
+    else:
+        y_scale_info = 5885.0 / 256
+        x_scale_info = 5885.0 / 256
+        spacing_info_md = (
+            f"**Spacing used:** default calibration | "
+            f"y = {y_scale_info:.4f} µm/pixel, x = {x_scale_info:.4f} µm/pixel "
+            f"(H=W=5885 µm over 256 px)"
+        )
 
     fish_lengths, curvatures, ratios, previews = [], [], [], []
     for i, seg_mask in enumerate(segmented_images):
@@ -440,7 +477,7 @@ def process(folder,
     # also prepare checkbox choices (index:shortname) for exclusion UI
     exclude_choices = [f"{i}:{_shorten_name(n, max_chars=22)}" for i, n in enumerate(filenames)]
     # return a gradio update for choices so the CheckboxGroup can be populated
-    return out_xlsx, boxplot_np, previews, filenames_md, data_state, excluded_state, gr.update(choices=exclude_choices, value=[])
+    return out_xlsx, boxplot_np, previews, filenames_md, data_state, excluded_state, gr.update(choices=exclude_choices, value=[]), spacing_info_md
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -606,6 +643,8 @@ with gr.Blocks() as demo:
         phys_w_um = gr.Textbox(label="Physical horizontal distance (µm)", placeholder="dkfz E041: 5885")
         phys_h_um = gr.Textbox(label="Physical vertical distance (µm)", placeholder="dkfz E041: 5885")
 
+    spacing_used_md = gr.Markdown("**Spacing used:** not calculated yet. Click Run.")
+
     run = gr.Button("Run")
 
     with gr.Row():
@@ -629,7 +668,7 @@ with gr.Blocks() as demo:
     run.click(
         fn=process,
         inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_thr, thr_val, phys_w_um, phys_h_um],
-        outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes]
+        outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes, spacing_used_md]
     )
 
     # When a gallery image is clicked, toggle its exclusion state and update previews
