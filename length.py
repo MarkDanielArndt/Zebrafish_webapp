@@ -173,6 +173,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     eye_diameter = 0.0
     eye_area = 0.0
     eye_diameter_points = None
+    bridge_len_override = None
     if mask.sum() == 0:
         out = (0.0, 0.0,)
         if return_path: out += (np.zeros((0, 2), dtype=int),)
@@ -438,30 +439,38 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
 
             if len(ecoords) > 0:
                 eye_centroid = ecoords.mean(axis=0)
+                # Closest fish-border pixel to the eye mask
                 dist_be = cdist(bcoords.astype(float), ecoords.astype(float))
                 closest_border = bcoords[np.argmin(dist_be.min(axis=1))].astype(int)
                 closest_border_to_eye = closest_border
 
+                # Orient path so the nearer endpoint is at the start
                 d0 = np.linalg.norm(path[0].astype(float) - closest_border.astype(float))
                 d1 = np.linalg.norm(path[-1].astype(float) - closest_border.astype(float))
                 if d1 < d0:
                     path = path[::-1]
                     extension_mask = extension_mask[::-1]
 
+                # Remove anchor "swerve": trim to nearest existing path point,
+                # then reconnect to the eye anchor with a smooth C1 bridge.
                 if len(path) >= 2:
                     d_path = np.linalg.norm(path.astype(float) - closest_border.astype(float), axis=1)
                     idx_near = int(np.argmin(d_path))
 
+                    # If nearest point ended up near path tail, flip once and recompute
                     if idx_near > (len(path) // 2):
                         path = path[::-1]
                         extension_mask = extension_mask[::-1]
                         d_path = np.linalg.norm(path.astype(float) - closest_border.astype(float), axis=1)
                         idx_near = int(np.argmin(d_path))
 
+                    # Trim early detour points and start from nearest centerline location
                     if idx_near > 0:
                         path = path[idx_near:]
                         extension_mask = extension_mask[idx_near:]
 
+                    # Further trim an early section, then reconnect with a smooth
+                    # cubic Hermite bridge that matches the centerline tangent at join.
                     n_trim_start = min(52, len(path) - 2) if len(path) > 30 else 0
                     if n_trim_start > 0:
                         kept = path[n_trim_start:]
@@ -476,8 +485,10 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
                     d01 = np.linalg.norm(chord)
 
                     if d01 > 1e-6:
+                        # Start tangent points from anchor toward join.
                         t0 = chord / (d01 + 1e-9)
 
+                        # End tangent follows local centerline direction at join.
                         look_ahead = min(len(kept) - 1, 6)
                         t1_vec = kept[look_ahead].astype(float) - join
                         t1_norm = np.linalg.norm(t1_vec)
@@ -503,6 +514,13 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
                             + h11[:, None] * m1[None, :]
                         )
 
+                        # Keep a sub-pixel bridge length for accurate final length
+                        if len(bridge_f) >= 2:
+                            dy_b, dx_b = spacing
+                            db = np.diff(bridge_f, axis=0)
+                            bridge_len_override = float(np.sqrt((db[:, 0] * dy_b) ** 2 + (db[:, 1] * dx_b) ** 2).sum())
+
+                        # Gentle local smoothing to suppress discretization corners.
                         if len(bridge_f) > 4:
                             for _ in range(3):
                                 prev = bridge_f.copy()
@@ -522,6 +540,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
                             else np.ones(len(bridge), dtype=bool)
                         )
 
+                    # Enforce first point as exact anchor and smooth early path slightly.
                     path[0] = closest_border
                     extension_mask[0] = True
                     if len(path) >= 6:
@@ -540,6 +559,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
                             path[:, 0] = np.clip(path[:, 0], 0, mask.shape[0] - 1)
                             path[:, 1] = np.clip(path[:, 1], 0, mask.shape[1] - 1)
 
+                    # Remove duplicate consecutive points that can arise after snapping
                     if len(path) >= 2:
                         mask_diff2 = np.any(np.diff(path, axis=0) != 0, axis=1)
                         keep_indices2 = np.concatenate([[True], mask_diff2])
@@ -552,6 +572,16 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     dxy = np.diff(pf, axis=0)
     seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
     length = float(seg.sum())
+
+    # If a Hermite bridge was used, compensate discretization loss from rounding.
+    if bridge_len_override is not None and len(path) >= 2 and len(extension_mask) == len(path):
+        non_ext = np.where(~extension_mask)[0]
+        bridge_end_idx = int(non_ext[0]) if len(non_ext) > 0 else len(path) - 1
+        if bridge_end_idx >= 1:
+            pb = path[:bridge_end_idx + 1].astype(float)
+            db_pix = np.diff(pb, axis=0)
+            bridge_len_discrete = float(np.sqrt((db_pix[:, 0] * dy) ** 2 + (db_pix[:, 1] * dx) ** 2).sum())
+            length += (bridge_len_override - bridge_len_discrete)
 
     # --- compute straight-line distance between start and end points of path ---
     straight_line_points = None

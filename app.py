@@ -413,14 +413,7 @@ def process(folder,
                     ratios.append(ratio)
             except Exception as e:
                 print(f"Error calculating length for image {i}: {e}")
-                # Fallback to old method if needed
-                try:
-                    L, _ = get_fish_length_circles_fixed(seg_mask, phys_w_um, phys_h_um, circle_dia=15)
-                    fish_lengths.append(float(L))
-                    if process_ratio:
-                        ratios.append(0.0)  # No ratio available for fallback method
-                except Exception:
-                    pass
+                pass
 
         if process_curvature:
             try:
