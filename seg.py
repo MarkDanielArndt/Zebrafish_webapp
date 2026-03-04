@@ -45,7 +45,7 @@ def segmentation_pipeline(
     folder_path,
     include_eyes=False,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    body_model_filename="best_model_5.pth",
+    body_model_filename="best_model_7.pth",
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
     eye_model_filename="best_model_eyes_combined_230226.pth",
