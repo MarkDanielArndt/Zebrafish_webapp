@@ -974,10 +974,11 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         
         status = f"✓ Manual points applied! Length: {length:.2f} µm, Straight: {straight_length:.2f} µm, Ratio: {length/straight_length:.3f}"
         
-        return data, previews, boxplot_np, status
+        # Return updated overlay to manual edit window (user can see lines before accordion closes)
+        return data, previews, boxplot_np, status, gr.update(), new_overlay
         
     except Exception as e:
-        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}"
+        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update()
 
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
@@ -1030,7 +1031,7 @@ with gr.Blocks() as demo:
         with gr.Row():
             out_box = gr.Image(label="Box plots", type="numpy")
         with gr.Row():
-            gallery = gr.Gallery(label="Segmentations (click to select for manual editing)", columns=5, height="auto")
+            gallery = gr.Gallery(label="Segmentations (click to select for manual editing)", columns=5, height="auto", object_fit="contain")
         
         # Manual point editing section
         with gr.Accordion("🔧 Manual Point Adjustment", open=False) as manual_edit_accordion:
@@ -1157,7 +1158,7 @@ with gr.Blocks() as demo:
     apply_manual_btn.click(
         fn=_apply_manual_points,
         inputs=[edit_image_idx, manual_points_temp, data_state],
-        outputs=[data_state, gallery, out_box, manual_status]
+        outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image]
     )
 
 if __name__ == "__main__":
