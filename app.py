@@ -503,7 +503,7 @@ def _draw_cross(img_np):
 
 def _compute_manual_length(seg_mask, point1, point2, spacing):
     """
-    Compute length from manually selected points using the centerline between them.
+    Compute length from manually selected points using the smoothest centerline path.
     point1, point2: (row, col) tuples in mask coordinates
     spacing: (dy, dx) physical units per pixel
     """
@@ -519,6 +519,7 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         # We'll use medial axis and find shortest path between the manual points
         from skimage.morphology import medial_axis
         from skimage.graph import MCP_Geometric
+        from scipy.interpolate import UnivariateSpline
         
         skel, dist_skel = medial_axis(seg_mask_bin, return_distance=True)
         
@@ -552,8 +553,97 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
             path = np.array([p1, p2], dtype=int)
             return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
         
+        # Apply aggressive smoothing to make the path as smooth as possible
+        def smooth_path_aggressive(path, dist_map, iterations=10, window=25):
+            """
+            Apply very aggressive smoothing using distance-weighted moving average.
+            Prioritizes smoothness over exact skeleton following.
+            """
+            if len(path) < 10:
+                return path
+            
+            path_smooth = path.astype(float).copy()
+            n = len(path)
+            
+            # Get thickness at each point for weighting
+            thickness = np.array([dist_map[tuple(p)] if tuple(p) in zip(*np.where(dist_map > 0)) 
+                                 else 1.0 for p in path])
+            thickness = np.clip(thickness, 1.0, None)
+            thickness_norm = thickness / (thickness.max() + 1e-6)
+            
+            for iteration in range(iterations):
+                prev = path_smooth.copy()
+                
+                for i in range(1, n - 1):  # Don't smooth endpoints
+                    # Define window
+                    half_win = window // 2
+                    start_idx = max(0, i - half_win)
+                    end_idx = min(n, i + half_win + 1)
+                    
+                    # Gaussian-like weights
+                    indices = np.arange(start_idx, end_idx)
+                    weights = np.exp(-0.5 * ((indices - i) / (half_win / 2.5)) ** 2)
+                    
+                    # Extra weight for thicker regions (more confident centerline)
+                    thickness_weights = thickness_norm[start_idx:end_idx]
+                    combined_weights = weights * (0.5 + 0.5 * thickness_weights)
+                    combined_weights /= combined_weights.sum()
+                    
+                    # Smoothing strength: very high for manual paths
+                    smooth_weight = 0.85  # Very high smoothing
+                    
+                    # Weighted average
+                    local_points = prev[start_idx:end_idx]
+                    smoothed_point = (combined_weights[:, None] * local_points).sum(axis=0)
+                    
+                    path_smooth[i] = smooth_weight * smoothed_point + (1 - smooth_weight) * prev[i]
+            
+            # Round back to integers
+            path_smooth = np.round(path_smooth).astype(int)
+            path_smooth[:, 0] = np.clip(path_smooth[:, 0], 0, seg_mask_bin.shape[0] - 1)
+            path_smooth[:, 1] = np.clip(path_smooth[:, 1], 0, seg_mask_bin.shape[1] - 1)
+            
+            return path_smooth
+        
+        # Apply smoothing
+        path_skel_smooth = smooth_path_aggressive(path_skel, dist_skel, iterations=15, window=35)
+        
+        # Optional: Apply spline fitting for ultra-smooth curve
+        if len(path_skel_smooth) >= 4:
+            try:
+                # Parameterize by cumulative distance
+                diffs = np.diff(path_skel_smooth.astype(float), axis=0)
+                segment_lengths = np.sqrt((diffs ** 2).sum(axis=1))
+                t = np.concatenate([[0], np.cumsum(segment_lengths)])
+                t = t / (t[-1] + 1e-9)  # Normalize to [0, 1]
+                
+                # Fit splines with very low smoothing factor for smooth but faithful curve
+                k = min(3, len(path_skel_smooth) - 1)  # Spline degree
+                s_factor = len(path_skel_smooth) * 0.5  # Smoothing factor
+                
+                spline_r = UnivariateSpline(t, path_skel_smooth[:, 0], k=k, s=s_factor)
+                spline_c = UnivariateSpline(t, path_skel_smooth[:, 1], k=k, s=s_factor)
+                
+                # Resample at higher resolution for length calculation
+                t_fine = np.linspace(0, 1, len(path_skel_smooth) * 2)
+                path_spline = np.column_stack([spline_r(t_fine), spline_c(t_fine)])
+                path_spline = np.round(path_spline).astype(int)
+                path_spline[:, 0] = np.clip(path_spline[:, 0], 0, seg_mask_bin.shape[0] - 1)
+                path_spline[:, 1] = np.clip(path_spline[:, 1], 0, seg_mask_bin.shape[1] - 1)
+                
+                path_skel_smooth = path_spline
+            except Exception as e:
+                print(f"Spline fitting failed, using smooth path: {e}")
+                pass
+        
         # Extend path to exact manual points
-        path = np.vstack([p1.astype(int).reshape(1, 2), path_skel, p2.astype(int).reshape(1, 2)])
+        path = np.vstack([p1.astype(int).reshape(1, 2), path_skel_smooth, p2.astype(int).reshape(1, 2)])
+        
+        # Remove duplicate consecutive points
+        if len(path) >= 2:
+            mask_diff = np.any(np.diff(path, axis=0) != 0, axis=1)
+            keep_indices = np.concatenate([[True], mask_diff])
+            path = path[keep_indices]
         
         # Compute length along path
         pf = path.astype(float)
@@ -937,17 +1027,18 @@ with gr.Blocks() as demo:
         with gr.Row():
             out_box = gr.Image(label="Box plots", type="numpy")
         with gr.Row():
-            gallery = gr.Gallery(label="Segmentations (click to toggle exclude)", columns=5, height="auto")
+            gallery = gr.Gallery(label="Segmentations (click to select for manual editing)", columns=5, height="auto")
         
         # Manual point editing section
         with gr.Accordion("🔧 Manual Point Adjustment", open=False) as manual_edit_accordion:
             gr.Markdown("""
             **Use this tool to manually set head and tail points when automatic detection fails.**
             
-            1. In the gallery above, find an image that needs correction
-            2. Click it once to select it for manual editing
-            3. Click on the large image below to set HEAD (green) and TAIL (red) points
-            4. Click 'Apply Manual Points' to recalculate the length
+            1. Click an image in the gallery above to select it for manual editing
+            2. Click on the large image below to set HEAD (green) and TAIL (red) points
+            3. Click 'Apply Manual Points' to recalculate the length
+            
+            **Note:** To exclude images from results, use the "Exclude images" checkboxes below.
             """)
             manual_edit_instructions = gr.Markdown("Select an image from the gallery above to begin manual editing.")
             
@@ -976,13 +1067,10 @@ with gr.Blocks() as demo:
         outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes, spacing_used_md]
     )
 
-    # Combined gallery click handler - toggles exclusion AND updates manual edit view
-    def _on_gallery_click(evt: gr.SelectData, excluded, data):
-        """Handle gallery click: toggle exclusion AND prepare for manual editing"""
-        # First, handle exclusion toggle
-        gallery_update, excluded, data, checkbox_update = _toggle_exclusion(evt, excluded, data)
-        
-        # Then, prepare manual editing view
+    # Gallery click handler - only prepares for manual editing (no exclusion toggle)
+    def _on_gallery_click(evt: gr.SelectData, data):
+        """Handle gallery click: prepare for manual editing"""
+        # Prepare manual editing view
         if data is None:
             manual_img = None
             manual_idx = -1
@@ -1001,13 +1089,13 @@ with gr.Blocks() as demo:
                 filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
                 manual_instr = f"**Selected: {filename}**\n\nClick on the image below to set points:\n- **First click** = HEAD (start point) - shown in GREEN\n- **Second click** = TAIL (end point) - shown in RED\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
         
-        return gallery_update, excluded, data, checkbox_update, manual_img, manual_idx, manual_instr
+        return manual_img, manual_idx, manual_instr
     
-    # When a gallery image is clicked, toggle exclusion AND prepare for manual editing
+    # When a gallery image is clicked, prepare for manual editing (exclusion only via checkboxes)
     gallery.select(
         fn=_on_gallery_click,
-        inputs=[excluded_state, data_state],
-        outputs=[gallery, excluded_state, data_state, exclude_checkboxes, manual_edit_image, edit_image_idx, manual_edit_instructions]
+        inputs=[data_state],
+        outputs=[manual_edit_image, edit_image_idx, manual_edit_instructions]
     )
 
     # Checkbox-based exclusion handler (alternative to clicking images)
