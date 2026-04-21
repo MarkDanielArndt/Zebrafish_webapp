@@ -748,7 +748,7 @@ def _generate_filtered_excel(data, feature_selections):
     return out_xlsx
 
 
-def _build_feature_selection_table(data):
+def _build_feature_selection_table(data, feature_selections=None):
     """Build a dataframe for feature selection per image"""
     if not data or 'filenames' not in data:
         return []
@@ -756,7 +756,14 @@ def _build_feature_selection_table(data):
     rows = []
     for i, filename in enumerate(data['filenames']):
         short_name = _shorten_name(filename, max_chars=30)
-        rows.append([i, short_name, True, True, True])  # idx, name, length, curvature, ratio
+        # Preserve existing selections if available, otherwise default to True
+        if feature_selections and i in feature_selections:
+            length_sel = feature_selections[i].get('length', True)
+            curv_sel = feature_selections[i].get('curvature', True)
+            ratio_sel = feature_selections[i].get('ratio', True)
+        else:
+            length_sel = curv_sel = ratio_sel = True
+        rows.append([i, short_name, length_sel, curv_sel, ratio_sel])
     
     return rows
 
@@ -870,10 +877,10 @@ def _reset_manual_points(edit_idx, manual_points_temp, data):
     return manual_points_temp, None, "No image selected"
 
 
-def _apply_manual_points(edit_idx, manual_points_temp, data):
+def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections):
     """Apply manual points and recalculate length for the selected image"""
     if data is None or edit_idx < 0:
-        return data, gr.update(), gr.update(), "No data or image selected"
+        return data, gr.update(), gr.update(), "No data or image selected", gr.update(), gr.update(), gr.update()
     
     if manual_points_temp is None or edit_idx not in manual_points_temp:
         return data, gr.update(), gr.update(), "No manual points set for this image"
@@ -974,8 +981,8 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         
         status = f"✓ Manual points applied! Length: {length:.2f} µm, Straight: {straight_length:.2f} µm, Ratio: {length/straight_length:.3f}"
         
-        # Rebuild feature table to keep it in sync
-        feature_table_data = _build_feature_selection_table(data)
+        # Rebuild feature table to keep it in sync, preserving user's checkbox states
+        feature_table_data = _build_feature_selection_table(data, feature_selections)
         
         # Return updated overlay to manual edit window (user can see lines before accordion closes)
         return data, previews, boxplot_np, status, gr.update(), new_overlay, feature_table_data
@@ -1161,7 +1168,7 @@ with gr.Blocks() as demo:
     # Apply manual points button
     apply_manual_btn.click(
         fn=_apply_manual_points,
-        inputs=[edit_image_idx, manual_points_temp, data_state],
+        inputs=[edit_image_idx, manual_points_temp, data_state, feature_selections_state],
         outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image, feature_table]
     )
 
