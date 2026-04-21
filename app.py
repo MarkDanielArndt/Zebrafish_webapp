@@ -462,14 +462,14 @@ def process(folder,
         'spacing': (y_scale, x_scale),
         'manual_points': {},
     }
-    excluded_state = [False] * len(filenames)
     shown_names = [_shorten_name(n, max_chars=22) for n in filenames[:5]]
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
-    # also prepare checkbox choices (index:shortname) for exclusion UI
-    exclude_choices = [f"{i}:{_shorten_name(n, max_chars=22)}" for i, n in enumerate(filenames)]
-    # return a gradio update for choices so the CheckboxGroup can be populated
-    return out_xlsx, boxplot_np, previews, filenames_md, data_state, excluded_state, gr.update(choices=exclude_choices, value=[]), spacing_info_md
+    
+    # Build feature selection table (all features included by default)
+    feature_table_data = _build_feature_selection_table(data_state)
+    
+    return out_xlsx, boxplot_np, previews, filenames_md, data_state, feature_table_data, spacing_info_md
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -478,21 +478,6 @@ def summarize_files(files):
     more = f" … and {len(files) - 5} more" if len(files) > 5 else ""
     return "**Uploaded:** " + ", ".join(short) + more
 
-
-def _draw_cross(img_np):
-    try:
-        img = img_np.copy()
-        if img.ndim == 2:
-            img = np.stack([img]*3, axis=-1)
-        h, w = img.shape[:2]
-        thickness = max(2, int(min(h, w) * 0.03))
-        # draw a less-bright red cross so it is visible but not overpowering
-        cross_color = (150, 0, 0)
-        cv2.line(img, (0, 0), (w - 1, h - 1), cross_color, thickness=thickness)
-        cv2.line(img, (w - 1, 0), (0, h - 1), cross_color, thickness=thickness)
-        return img
-    except Exception:
-        return img_np
 
 
 def _compute_manual_length(seg_mask, point1, point2, spacing):
@@ -701,63 +686,52 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
 
 
-def _toggle_exclusion(evt: gr.SelectData, excluded, data):
-    # evt: SelectData from gallery click; excluded: list of bools; data: data_state dict
-    if data is None:
-        return gr.update(), excluded, data, gr.update()
-    # ensure excluded list length
-    if excluded is None or len(excluded) != len(data['filenames']):
-        excluded = [False] * len(data['filenames'])
-    
-    idx = evt.index  # Use Gradio's SelectData.index directly
-    
-    if idx is None or idx < 0 or idx >= len(excluded):
-        return gr.update(), excluded, data, gr.update()
-    
-    excluded[idx] = not bool(excluded[idx])
-    
-    # rebuild previews with cross for excluded and update data state
-    previews = []
-    originals = data.get('original_previews', data.get('previews', []))
-    for i, (orig_img, cap) in enumerate(originals):
-        short_cap = cap
-        if isinstance(short_cap, str) and ':' in short_cap:
-            short_cap = short_cap.split(':', 1)[1]
-        if i < len(excluded) and excluded[i]:
-            previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
-        else:
-            previews.append([orig_img, f"{i}:{short_cap}"])
-    
-    # persist the updated previews in data so subsequent toggles use original images
-    data['previews'] = previews
-    
-    # Build checkbox values to sync with excluded state
-    checkbox_values = [f"{i}:{_shorten_name(data['filenames'][i], max_chars=22)}" 
-                      for i in range(len(excluded)) if excluded[i]]
-    
-    return previews, excluded, data, gr.update(value=checkbox_values)
 
 
-def _generate_filtered_excel(data, excluded):
+def _generate_filtered_excel(data, feature_selections):
+    """
+    Generate Excel with feature-specific exclusions.
+    feature_selections: dict of {image_idx: {'length': bool, 'curvature': bool, 'ratio': bool}}
+    """
     if not data:
         return None
-    excluded = excluded or []
+    
+    feature_selections = feature_selections or {}
     fnames, Ls, Cs, Rs = [], [], [], []
+    
     # Check what data we have available
     has_lengths = 'fish_lengths' in data and data['fish_lengths']
     has_curvatures = 'curvatures' in data and data['curvatures']
     has_ratios = 'ratios' in data and data['ratios']
     
     for i, name in enumerate(data['filenames']):
-        if i < len(excluded) and excluded[i]:
-            continue
+        # Get feature selections for this image (default all True)
+        selections = feature_selections.get(i, {'length': True, 'curvature': True, 'ratio': True})
+        
+        # Check if at least one feature is selected for this image
+        if not any(selections.values()):
+            continue  # Skip image entirely if no features selected
+        
         fnames.append(name)
+        
+        # Add feature data based on selections
         if has_lengths:
-            Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
+            if selections.get('length', True):
+                Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
+            else:
+                Ls.append("N/A")  # Excluded
+        
         if has_curvatures:
-            Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
+            if selections.get('curvature', True):
+                Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
+            else:
+                Cs.append("N/A")  # Excluded
+        
         if has_ratios:
-            Rs.append(data['ratios'][i] if i < len(data['ratios']) else "N/A")
+            if selections.get('ratio', True):
+                Rs.append(data['ratios'][i] if i < len(data['ratios']) else "N/A")
+            else:
+                Rs.append("N/A")  # Excluded
     
     # Pass empty lists for features that weren't processed
     if not has_lengths:
@@ -774,34 +748,36 @@ def _generate_filtered_excel(data, excluded):
     return out_xlsx
 
 
-def _update_from_checkboxes(selected, data):
-    # selected: list of caption strings like '3:shortname' to be excluded
-    if data is None:
-        return gr.update(), [], data
-    # derive excluded boolean list
-    n = len(data.get('filenames', []))
-    excluded = [False] * n
-    if selected:
-        for s in selected:
-            try:
-                idx = int(str(s).split(':', 1)[0])
-                if 0 <= idx < n:
-                    excluded[idx] = True
-            except Exception:
-                continue
-    # rebuild previews with crosses for excluded images
-    previews = []
-    originals = data.get('original_previews', data.get('previews', []))
-    for i, (orig_img, cap) in enumerate(originals):
-        short_cap = cap
-        if isinstance(short_cap, str) and ':' in short_cap:
-            short_cap = short_cap.split(':', 1)[1]
-        if excluded[i]:
-            previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
-        else:
-            previews.append([orig_img, f"{i}:{short_cap}"])
-    data['previews'] = previews
-    return previews, excluded, data
+def _build_feature_selection_table(data):
+    """Build a dataframe for feature selection per image"""
+    if not data or 'filenames' not in data:
+        return []
+    
+    rows = []
+    for i, filename in enumerate(data['filenames']):
+        short_name = _shorten_name(filename, max_chars=30)
+        rows.append([i, short_name, True, True, True])  # idx, name, length, curvature, ratio
+    
+    return rows
+
+
+def _update_from_feature_table(table_data, data):
+    """Convert table data to feature selections dict"""
+    if not table_data or not data:
+        return {}
+    
+    feature_selections = {}
+    for row in table_data:
+        if len(row) >= 5:
+            idx = int(row[0])
+            feature_selections[idx] = {
+                'length': bool(row[2]),
+                'curvature': bool(row[3]),
+                'ratio': bool(row[4])
+            }
+    
+    return feature_selections
+
 
 
 def _enter_manual_mode(evt: gr.SelectData, data):
@@ -894,7 +870,7 @@ def _reset_manual_points(edit_idx, manual_points_temp, data):
     return manual_points_temp, None, "No image selected"
 
 
-def _apply_manual_points(edit_idx, manual_points_temp, data, excluded):
+def _apply_manual_points(edit_idx, manual_points_temp, data):
     """Apply manual points and recalculate length for the selected image"""
     if data is None or edit_idx < 0:
         return data, gr.update(), gr.update(), "No data or image selected"
@@ -983,13 +959,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, excluded):
                 if len(parts) > 1:
                     short_cap = parts[1]
             
-            # Check if excluded
-            is_excluded = excluded and i < len(excluded) and excluded[i]
-            
-            if is_excluded:
-                previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
-            else:
-                previews.append([orig_img, f"{i}:{short_cap}"])
+            previews.append([orig_img, f"{i}:{short_cap}"])
         
         data['previews'] = previews
         
@@ -1033,7 +1003,7 @@ with gr.Blocks() as demo:
 
     # Hidden states for interactive filtering (populated after Run)
     data_state = gr.State(None)
-    excluded_state = gr.State([])
+    feature_selections_state = gr.State({})
     manual_points_temp = gr.State({})
     edit_image_idx = gr.State(-1)
 
@@ -1087,9 +1057,28 @@ with gr.Blocks() as demo:
         with gr.Row():
             gen_filtered_btn = gr.Button("Generate Filtered Excel")
         filenames_list = gr.Markdown("")
-        # CheckboxGroup to select images to exclude (populated after Run)
-        with gr.Row():
-            exclude_checkboxes = gr.CheckboxGroup(choices=[], label="Exclude images (check to exclude)")
+        
+        # Feature selection table - allows excluding specific features per image
+        with gr.Accordion("📊 Feature Selection per Image", open=False):
+            gr.Markdown("""
+            **Select which features to include for each image.**
+            
+            Uncheck a feature to exclude it from the statistics and Excel export for that specific image.
+            For example, if an image has good length measurement but poor curvature detection, 
+            you can uncheck only the curvature for that image.
+            
+            **Tip:** All features are included by default.
+            """)
+            
+            feature_table = gr.Dataframe(
+                headers=["#", "Image", "Length", "Curvature", "Ratio"],
+                datatype=["number", "str", "bool", "bool", "bool"],
+                col_count=(5, "fixed"),
+                label="Select features to include (check = include, uncheck = exclude)",
+                interactive=True,
+                wrap=True
+            )
+        
         with gr.Row():
             out_file_filtered = gr.File(label="Download filtered results (.xlsx)")
 
@@ -1097,10 +1086,10 @@ with gr.Blocks() as demo:
     run.click(
         fn=process,
         inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_thr, thr_val, phys_w_um, phys_h_um],
-        outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes, spacing_used_md]
+        outputs=[out_file, out_box, gallery, filenames_list, data_state, feature_table, spacing_used_md]
     )
 
-    # Gallery click handler - only prepares for manual editing (no exclusion toggle)
+    # Gallery click handler - only prepares for manual editing
     def _on_gallery_click(evt: gr.SelectData, data):
         """Handle gallery click: prepare for manual editing"""
         # Prepare manual editing view
@@ -1124,18 +1113,31 @@ with gr.Blocks() as demo:
         
         return manual_img, manual_idx, manual_instr
     
-    # When a gallery image is clicked, prepare for manual editing (exclusion only via checkboxes)
+    # When a gallery image is clicked, prepare for manual editing
     gallery.select(
         fn=_on_gallery_click,
         inputs=[data_state],
         outputs=[manual_edit_image, edit_image_idx, manual_edit_instructions]
     )
 
-    # Checkbox-based exclusion handler (alternative to clicking images)
-    exclude_checkboxes.change(fn=_update_from_checkboxes, inputs=[exclude_checkboxes, data_state], outputs=[gallery, excluded_state, data_state])
+    # When feature table is edited, update feature_selections_state
+    feature_table.change(
+        fn=_update_from_feature_table,
+        inputs=[feature_table, data_state],
+        outputs=[feature_selections_state]
+    )
 
-    # Generate a filtered excel that omits excluded images (writes to separate file output)
-    gen_filtered_btn.click(fn=_generate_filtered_excel, inputs=[data_state, excluded_state], outputs=[out_file_filtered])
+    # Generate filtered Excel based on feature table selections
+    def _generate_excel_from_table(table_data, data):
+        """Generate Excel using feature selections from table"""
+        feature_selections = _update_from_feature_table(table_data, data)
+        return _generate_filtered_excel(data, feature_selections)
+    
+    gen_filtered_btn.click(
+        fn=_generate_excel_from_table, 
+        inputs=[feature_table, data_state], 
+        outputs=[out_file_filtered]
+    )
     
     # When manual edit image is clicked, record the point
     manual_edit_image.select(
@@ -1154,7 +1156,7 @@ with gr.Blocks() as demo:
     # Apply manual points button
     apply_manual_btn.click(
         fn=_apply_manual_points,
-        inputs=[edit_image_idx, manual_points_temp, data_state, excluded_state],
+        inputs=[edit_image_idx, manual_points_temp, data_state],
         outputs=[data_state, gallery, out_box, manual_status]
     )
 
