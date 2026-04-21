@@ -462,6 +462,11 @@ def process(folder,
         'threshold_value': threshold_value,
         'previews': previews,
         'original_previews': original_previews,
+        'original_images': original_images,
+        'segmented_images': segmented_images,
+        'eyes_images': eyes_images,
+        'spacing': (y_scale, x_scale),
+        'manual_points': {},
     }
     excluded_state = [False] * len(filenames)
     shown_names = [_shorten_name(n, max_chars=22) for n in filenames[:5]]
@@ -494,6 +499,83 @@ def _draw_cross(img_np):
         return img
     except Exception:
         return img_np
+
+
+def _compute_manual_length(seg_mask, point1, point2, spacing):
+    """
+    Compute length from manually selected points using the centerline between them.
+    point1, point2: (row, col) tuples in mask coordinates
+    spacing: (dy, dx) physical units per pixel
+    """
+    try:
+        seg_mask_bin = seg_mask > 0
+        dy, dx = spacing
+        
+        # Convert points to numpy arrays
+        p1 = np.array(point1, dtype=float)
+        p2 = np.array(point2, dtype=float)
+        
+        # Create a simple path through centerline between the two points
+        # We'll use medial axis and find shortest path between the manual points
+        from skimage.morphology import medial_axis
+        from skimage.graph import MCP_Geometric
+        
+        skel, dist_skel = medial_axis(seg_mask_bin, return_distance=True)
+        
+        # Find closest skeleton points to manual points
+        skel_coords = np.argwhere(skel)
+        if len(skel_coords) < 2:
+            # Fallback: straight line
+            diff = p2 - p1
+            straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+            path = np.array([p1, p2], dtype=int)
+            return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
+        
+        # Find closest skeleton pixels to manual points
+        from scipy.spatial.distance import cdist
+        dist_to_p1 = cdist([p1], skel_coords)[0]
+        dist_to_p2 = cdist([p2], skel_coords)[0]
+        
+        skel_p1 = tuple(skel_coords[np.argmin(dist_to_p1)])
+        skel_p2 = tuple(skel_coords[np.argmin(dist_to_p2)])
+        
+        # Compute path along skeleton between the two points
+        cost_skel = np.where(skel, 1.0, np.inf)
+        mcp = MCP_Geometric(cost_skel, fully_connected=True)
+        mcp.find_costs([skel_p1])
+        path_skel = np.array(mcp.traceback(skel_p2), dtype=int)
+        
+        if len(path_skel) < 2:
+            # Fallback: straight line
+            diff = p2 - p1
+            straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+            path = np.array([p1, p2], dtype=int)
+            return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
+        
+        # Extend path to exact manual points
+        path = np.vstack([p1.astype(int).reshape(1, 2), path_skel, p2.astype(int).reshape(1, 2)])
+        
+        # Compute length along path
+        pf = path.astype(float)
+        dxy = np.diff(pf, axis=0)
+        seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
+        length = float(seg.sum())
+        
+        # Compute straight-line distance
+        diff = p2 - p1
+        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+        
+        straight_line_points = (tuple(path[0]), tuple(path[-1]))
+        
+        return length, straight_length, path, straight_line_points
+        
+    except Exception as e:
+        print(f"Error in manual length computation: {e}")
+        # Fallback: straight line between points
+        diff = p2 - p1
+        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+        path = np.array([p1, p2], dtype=int)
+        return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
 
 
 def _toggle_exclusion(evt: gr.SelectData, excluded, data):
@@ -598,6 +680,212 @@ def _update_from_checkboxes(selected, data):
     data['previews'] = previews
     return previews, excluded, data
 
+
+def _enter_manual_mode(evt: gr.SelectData, data):
+    """Enter manual editing mode for selected image"""
+    if data is None:
+        return None, -1, "No data available", gr.update(visible=False)
+    
+    idx = evt.index
+    if idx < 0 or idx >= len(data.get('original_images', [])):
+        return None, -1, "Invalid image selection", gr.update(visible=False)
+    
+    # Get the original image for display
+    original_img = data['original_images'][idx]
+    seg_mask = data['segmented_images'][idx]
+    
+    # Create a composite showing original + segmentation overlay
+    display_img = _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None)
+    
+    filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
+    instructions = f"**Editing: {filename}**\n\nClick on the image to set points:\n1. First click = HEAD (start point)\n2. Second click = TAIL (end point)\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
+    
+    return display_img, idx, instructions, gr.update(visible=True)
+
+
+def _record_manual_click(evt: gr.SelectData, current_img, edit_idx, manual_points_temp):
+    """Record a click on the image for manual point selection"""
+    if current_img is None or edit_idx < 0:
+        return manual_points_temp, current_img, "Please select an image from the gallery first"
+    
+    # Get click coordinates from Gradio SelectData
+    # For Image component, evt.index gives (x, y) coordinates
+    if hasattr(evt, 'index') and evt.index is not None:
+        if isinstance(evt.index, (list, tuple)) and len(evt.index) >= 2:
+            click_x, click_y = int(evt.index[0]), int(evt.index[1])
+        else:
+            return manual_points_temp, current_img, "Invalid click coordinates"
+    else:
+        return manual_points_temp, current_img, "No click coordinates received"
+    
+    # Initialize manual points storage
+    if manual_points_temp is None:
+        manual_points_temp = {}
+    
+    if edit_idx not in manual_points_temp:
+        manual_points_temp[edit_idx] = []
+    
+    points_list = manual_points_temp[edit_idx]
+    
+    # Add the new point (store as row, col)
+    if len(points_list) < 2:
+        points_list.append((click_y, click_x))  # Store as (row, col)
+        manual_points_temp[edit_idx] = points_list
+        
+        # Draw the points on the image
+        img_with_points = current_img.copy()
+        
+        # Draw existing points
+        for i, (py, px) in enumerate(points_list):
+            color = (0, 255, 0) if i == 0 else (255, 0, 0)  # Green for head, red for tail
+            # Draw filled circle
+            cv2.circle(img_with_points, (int(px), int(py)), 8, color, -1)
+            # Draw white border
+            cv2.circle(img_with_points, (int(px), int(py)), 10, (255, 255, 255), 2)
+            # Add label
+            label = "HEAD" if i == 0 else "TAIL"
+            cv2.putText(img_with_points, label, (int(px) + 15, int(py) - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        if len(points_list) == 1:
+            status = "✓ HEAD point set (green). Now click to set TAIL point (will be red)."
+        else:
+            status = "✓ Both points set! Click 'Apply Manual Points' to recalculate length."
+        
+        return manual_points_temp, img_with_points, status
+    else:
+        return manual_points_temp, current_img, "⚠ Both points already set. Click 'Reset Points' to start over, or 'Apply Manual Points' to use these."
+
+
+def _reset_manual_points(edit_idx, manual_points_temp, data):
+    """Reset manual points for current image"""
+    if manual_points_temp and edit_idx in manual_points_temp:
+        del manual_points_temp[edit_idx]
+    
+    if data and edit_idx >= 0 and edit_idx < len(data.get('original_images', [])):
+        original_img = data['original_images'][edit_idx]
+        seg_mask = data['segmented_images'][edit_idx]
+        display_img = _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None)
+        return manual_points_temp, display_img, "Points reset. Click to set HEAD point."
+    
+    return manual_points_temp, None, "No image selected"
+
+
+def _apply_manual_points(edit_idx, manual_points_temp, data, excluded):
+    """Apply manual points and recalculate length for the selected image"""
+    if data is None or edit_idx < 0:
+        return data, gr.update(), gr.update(), "No data or image selected"
+    
+    if manual_points_temp is None or edit_idx not in manual_points_temp:
+        return data, gr.update(), gr.update(), "No manual points set for this image"
+    
+    points_list = manual_points_temp[edit_idx]
+    if len(points_list) != 2:
+        return data, gr.update(), gr.update(), "Need exactly 2 points (head and tail)"
+    
+    # Get the image data
+    seg_mask = data['segmented_images'][edit_idx]
+    h_seg, w_seg = seg_mask.shape[:2]
+    
+    # Convert click coordinates to mask coordinates (256x256)
+    # Points are stored as (row, col) in display space
+    # Need to scale to mask space
+    point1_display = points_list[0]  # (row, col) in display
+    point2_display = points_list[1]
+    
+    # Get display image size (it's been resized by _resize_max)
+    original_img = data['original_images'][edit_idx]
+    display_overlay = _make_seg_overlay(original_img, seg_mask)
+    h_display, w_display = display_overlay.shape[:2]
+    
+    # Scale points from display to mask coordinates
+    scale_y = h_seg / h_display
+    scale_x = w_seg / w_display
+    
+    point1_mask = (int(point1_display[0] * scale_y), int(point1_display[1] * scale_x))
+    point2_mask = (int(point2_display[0] * scale_y), int(point2_display[1] * scale_x))
+    
+    # Ensure points are within bounds
+    point1_mask = (np.clip(point1_mask[0], 0, h_seg-1), np.clip(point1_mask[1], 0, w_seg-1))
+    point2_mask = (np.clip(point2_mask[0], 0, h_seg-1), np.clip(point2_mask[1], 0, w_seg-1))
+    
+    # Get spacing from data
+    spacing = data.get('spacing', (5885.0/256, 5885.0/256))
+    
+    # Recalculate length with manual points
+    try:
+        length, straight_length, path, straight_line_points = _compute_manual_length(
+            seg_mask, point1_mask, point2_mask, spacing
+        )
+        
+        # Update data
+        if 'fish_lengths' in data and edit_idx < len(data['fish_lengths']):
+            data['fish_lengths'][edit_idx] = length
+        
+        if 'ratios' in data and edit_idx < len(data['ratios']):
+            if straight_length > 0:
+                data['ratios'][edit_idx] = length / straight_length
+            else:
+                data['ratios'][edit_idx] = 0.0
+        
+        # Store manual points in data for persistence
+        if 'manual_points' not in data:
+            data['manual_points'] = {}
+        data['manual_points'][edit_idx] = (point1_mask, point2_mask)
+        
+        # Regenerate preview for this image
+        eye_mask = data.get('eyes_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('eyes_images', [])) else None
+        new_overlay = _make_seg_overlay(
+            original_img,
+            seg_mask,
+            path_points=path,
+            straight_line_points=straight_line_points,
+            eye_mask=eye_mask
+        )
+        
+        # Update the specific preview
+        if 'original_previews' in data and edit_idx < len(data['original_previews']):
+            original_name = data['filenames'][edit_idx] if edit_idx < len(data['filenames']) else f"image_{edit_idx}"
+            short = _shorten_name(original_name, max_chars=22)
+            cap = f"{edit_idx}:{short} (manual)"
+            data['original_previews'][edit_idx] = [new_overlay, cap]
+        
+        # Rebuild all previews with updated one
+        previews = []
+        originals = data.get('original_previews', data.get('previews', []))
+        for i, (orig_img, cap) in enumerate(originals):
+            short_cap = cap
+            if isinstance(short_cap, str) and ':' in short_cap:
+                parts = short_cap.split(':', 1)
+                if len(parts) > 1:
+                    short_cap = parts[1]
+            
+            # Check if excluded
+            is_excluded = excluded and i < len(excluded) and excluded[i]
+            
+            if is_excluded:
+                previews.append([_draw_cross(orig_img), f"{i}:{short_cap} (excluded)"])
+            else:
+                previews.append([orig_img, f"{i}:{short_cap}"])
+        
+        data['previews'] = previews
+        
+        # Regenerate boxplot with updated data
+        boxplot_png = _make_boxplots_image(
+            data.get('fish_lengths', []),
+            data.get('curvatures', []),
+            data.get('ratios', [])
+        )
+        boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
+        data['boxplot_png'] = boxplot_png
+        
+        status = f"✓ Manual points applied! Length: {length:.2f} µm, Straight: {straight_length:.2f} µm, Ratio: {length/straight_length:.3f}"
+        
+        return data, previews, boxplot_np, status
+        
+    except Exception as e:
+        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}"
+
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
     gr.Markdown("""
@@ -623,6 +911,8 @@ with gr.Blocks() as demo:
     # Hidden states for interactive filtering (populated after Run)
     data_state = gr.State(None)
     excluded_state = gr.State([])
+    manual_points_temp = gr.State({})
+    edit_image_idx = gr.State(-1)
 
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
@@ -648,6 +938,28 @@ with gr.Blocks() as demo:
             out_box = gr.Image(label="Box plots", type="numpy")
         with gr.Row():
             gallery = gr.Gallery(label="Segmentations (click to toggle exclude)", columns=5, height="auto")
+        
+        # Manual point editing section
+        with gr.Accordion("🔧 Manual Point Adjustment", open=False) as manual_edit_accordion:
+            gr.Markdown("""
+            **Use this tool to manually set head and tail points when automatic detection fails.**
+            
+            1. In the gallery above, find an image that needs correction
+            2. Click it once to select it for manual editing
+            3. Click on the large image below to set HEAD (green) and TAIL (red) points
+            4. Click 'Apply Manual Points' to recalculate the length
+            """)
+            manual_edit_instructions = gr.Markdown("Select an image from the gallery above to begin manual editing.")
+            
+            with gr.Row():
+                manual_edit_image = gr.Image(label="Click to set points: HEAD (1st click) → TAIL (2nd click)", type="numpy", interactive=False)
+            
+            manual_status = gr.Markdown("")
+            
+            with gr.Row():
+                reset_points_btn = gr.Button("Reset Points", variant="secondary")
+                apply_manual_btn = gr.Button("Apply Manual Points", variant="primary")
+        
         with gr.Row():
             gen_filtered_btn = gr.Button("Generate Filtered Excel")
         filenames_list = gr.Markdown("")
@@ -664,15 +976,66 @@ with gr.Blocks() as demo:
         outputs=[out_file, out_box, gallery, filenames_list, data_state, excluded_state, exclude_checkboxes, spacing_used_md]
     )
 
-    # When a gallery image is clicked, toggle its exclusion state and update previews
-    # Note: the handler returns previews, excluded_state, updated data_state, and checkbox update
-    gallery.select(fn=_toggle_exclusion, inputs=[excluded_state, data_state], outputs=[gallery, excluded_state, data_state, exclude_checkboxes])
+    # Combined gallery click handler - toggles exclusion AND updates manual edit view
+    def _on_gallery_click(evt: gr.SelectData, excluded, data):
+        """Handle gallery click: toggle exclusion AND prepare for manual editing"""
+        # First, handle exclusion toggle
+        gallery_update, excluded, data, checkbox_update = _toggle_exclusion(evt, excluded, data)
+        
+        # Then, prepare manual editing view
+        if data is None:
+            manual_img = None
+            manual_idx = -1
+            manual_instr = "No data available"
+        else:
+            idx = evt.index
+            if idx < 0 or idx >= len(data.get('original_images', [])):
+                manual_img = None
+                manual_idx = -1
+                manual_instr = "Invalid image selection"
+            else:
+                original_img = data['original_images'][idx]
+                seg_mask = data['segmented_images'][idx]
+                manual_img = _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None)
+                manual_idx = idx
+                filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
+                manual_instr = f"**Selected: {filename}**\n\nClick on the image below to set points:\n- **First click** = HEAD (start point) - shown in GREEN\n- **Second click** = TAIL (end point) - shown in RED\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
+        
+        return gallery_update, excluded, data, checkbox_update, manual_img, manual_idx, manual_instr
+    
+    # When a gallery image is clicked, toggle exclusion AND prepare for manual editing
+    gallery.select(
+        fn=_on_gallery_click,
+        inputs=[excluded_state, data_state],
+        outputs=[gallery, excluded_state, data_state, exclude_checkboxes, manual_edit_image, edit_image_idx, manual_edit_instructions]
+    )
 
     # Checkbox-based exclusion handler (alternative to clicking images)
     exclude_checkboxes.change(fn=_update_from_checkboxes, inputs=[exclude_checkboxes, data_state], outputs=[gallery, excluded_state, data_state])
 
     # Generate a filtered excel that omits excluded images (writes to separate file output)
     gen_filtered_btn.click(fn=_generate_filtered_excel, inputs=[data_state, excluded_state], outputs=[out_file_filtered])
+    
+    # When manual edit image is clicked, record the point
+    manual_edit_image.select(
+        fn=_record_manual_click,
+        inputs=[manual_edit_image, edit_image_idx, manual_points_temp],
+        outputs=[manual_points_temp, manual_edit_image, manual_status]
+    )
+    
+    # Reset points button
+    reset_points_btn.click(
+        fn=_reset_manual_points,
+        inputs=[edit_image_idx, manual_points_temp, data_state],
+        outputs=[manual_points_temp, manual_edit_image, manual_status]
+    )
+    
+    # Apply manual points button
+    apply_manual_btn.click(
+        fn=_apply_manual_points,
+        inputs=[edit_image_idx, manual_points_temp, data_state, excluded_state],
+        outputs=[data_state, gallery, out_box, manual_status]
+    )
 
 if __name__ == "__main__":
     demo.launch(share=True)
