@@ -161,12 +161,6 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
     else: m = (m > 127).astype(np.uint8) * 255
     return m
 
-def _resize_max(img: np.ndarray, max_w: int = 640) -> np.ndarray:
-    h, w = img.shape[:2]
-    if w <= max_w: return img
-    scale = max_w / float(w); new_w, new_h = int(w*scale), int(h*scale)
-    return np.array(PILImage.fromarray(img).resize((new_w, new_h), resample=PILImage.BILINEAR))
-
 def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
@@ -217,7 +211,7 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
         except Exception:
             pass
 
-    return _resize_max(overlay)
+    return overlay  # Return full resolution image without resizing
 
 def _shorten_name(name: str, max_chars: int = 22) -> str:
     base = os.path.basename(name)
@@ -922,7 +916,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, excluded):
     point1_display = points_list[0]  # (row, col) in display
     point2_display = points_list[1]
     
-    # Get display image size (it's been resized by _resize_max)
+    # Get display image size (now full resolution)
     original_img = data['original_images'][edit_idx]
     display_overlay = _make_seg_overlay(original_img, seg_mask)
     h_display, w_display = display_overlay.shape[:2]
@@ -1047,8 +1041,8 @@ with gr.Blocks() as demo:
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
         chk_len  = gr.Checkbox(value=True, label="Process Length")
         chk_ratio = gr.Checkbox(value=True, label="Process Length/Straight Line Ratio")
-        chk_thr  = gr.Checkbox(value=False, label="Use Threshold")
-        thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value")
+        chk_thr  = gr.Checkbox(value=False, label="Use Threshold", visible=False)
+        thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value", visible=False)
 
     # --- New physical distance inputs (µm), placed just above Run button ---
     with gr.Row():
