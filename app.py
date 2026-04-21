@@ -503,7 +503,8 @@ def _draw_cross(img_np):
 
 def _compute_manual_length(seg_mask, point1, point2, spacing):
     """
-    Compute length from manually selected points using the smoothest centerline path.
+    Compute length from manually selected points using a smooth path through the center of the fish.
+    Ensures the path always stays inside the segmented region.
     point1, point2: (row, col) tuples in mask coordinates
     spacing: (dy, dx) physical units per pixel
     """
@@ -515,129 +516,147 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         p1 = np.array(point1, dtype=float)
         p2 = np.array(point2, dtype=float)
         
-        # Create a simple path through centerline between the two points
-        # We'll use medial axis and find shortest path between the manual points
-        from skimage.morphology import medial_axis
-        from skimage.graph import MCP_Geometric
-        from scipy.interpolate import UnivariateSpline
+        from scipy.ndimage import distance_transform_edt
+        from skimage.graph import route_through_array
+        from scipy.ndimage import gaussian_filter
         
-        skel, dist_skel = medial_axis(seg_mask_bin, return_distance=True)
+        # Compute distance transform - distance from each pixel to nearest background
+        dist_transform = distance_transform_edt(seg_mask_bin)
         
-        # Find closest skeleton points to manual points
-        skel_coords = np.argwhere(skel)
-        if len(skel_coords) < 2:
+        if dist_transform.max() == 0:
             # Fallback: straight line
             diff = p2 - p1
             straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
             path = np.array([p1, p2], dtype=int)
             return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
         
-        # Find closest skeleton pixels to manual points
-        from scipy.spatial.distance import cdist
-        dist_to_p1 = cdist([p1], skel_coords)[0]
-        dist_to_p2 = cdist([p2], skel_coords)[0]
+        # Create cost map: lower cost in the center (high distance), higher cost at edges
+        # Invert distance: paths prefer to go through the thickest/central parts
+        max_dist = dist_transform.max()
+        cost_map = np.where(seg_mask_bin, max_dist - dist_transform + 0.1, 1e10)
         
-        skel_p1 = tuple(skel_coords[np.argmin(dist_to_p1)])
-        skel_p2 = tuple(skel_coords[np.argmin(dist_to_p2)])
+        # Smooth the cost map to encourage smooth paths
+        cost_map = gaussian_filter(cost_map, sigma=2.0)
         
-        # Compute path along skeleton between the two points
-        cost_skel = np.where(skel, 1.0, np.inf)
-        mcp = MCP_Geometric(cost_skel, fully_connected=True)
-        mcp.find_costs([skel_p1])
-        path_skel = np.array(mcp.traceback(skel_p2), dtype=int)
+        # Ensure manual points are inside the mask
+        p1_int = np.clip(np.round(p1).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
+        p2_int = np.clip(np.round(p2).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
         
-        if len(path_skel) < 2:
+        # If points are outside, find nearest inside point
+        if not seg_mask_bin[p1_int[0], p1_int[1]]:
+            mask_coords = np.argwhere(seg_mask_bin)
+            if len(mask_coords) > 0:
+                from scipy.spatial.distance import cdist
+                dist_to_p1 = cdist([p1], mask_coords)[0]
+                p1_int = mask_coords[np.argmin(dist_to_p1)]
+        
+        if not seg_mask_bin[p2_int[0], p2_int[1]]:
+            mask_coords = np.argwhere(seg_mask_bin)
+            if len(mask_coords) > 0:
+                from scipy.spatial.distance import cdist
+                dist_to_p2 = cdist([p2], mask_coords)[0]
+                p2_int = mask_coords[np.argmin(dist_to_p2)]
+        
+        # Find path with minimum cost through the center
+        try:
+            indices, weight = route_through_array(
+                cost_map, 
+                start=tuple(p1_int), 
+                end=tuple(p2_int),
+                fully_connected=True,
+                geometric=True
+            )
+            path = np.array(indices, dtype=int)
+        except Exception as e:
+            print(f"Route finding failed: {e}, using straight line")
+            # Fallback: interpolate straight line
+            n_points = int(np.ceil(np.linalg.norm(p2_int - p1_int))) + 1
+            t = np.linspace(0, 1, n_points)
+            path = p1_int[None, :] * (1 - t[:, None]) + p2_int[None, :] * t[:, None]
+            path = np.round(path).astype(int)
+        
+        if len(path) < 2:
             # Fallback: straight line
             diff = p2 - p1
             straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
             path = np.array([p1, p2], dtype=int)
             return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
         
-        # Apply aggressive smoothing to make the path as smooth as possible
-        def smooth_path_aggressive(path, dist_map, iterations=10, window=25):
+        # Apply smoothing while keeping points inside the mask
+        def smooth_path_constrained(path, mask, dist_map, iterations=8):
             """
-            Apply very aggressive smoothing using distance-weighted moving average.
-            Prioritizes smoothness over exact skeleton following.
+            Smooth path while ensuring all points stay inside the mask.
+            Uses distance transform to weight smoothing - more in thick regions.
             """
-            if len(path) < 10:
+            if len(path) < 5:
                 return path
             
             path_smooth = path.astype(float).copy()
             n = len(path)
             
-            # Get thickness at each point for weighting
-            thickness = np.array([dist_map[tuple(p)] if tuple(p) in zip(*np.where(dist_map > 0)) 
-                                 else 1.0 for p in path])
-            thickness = np.clip(thickness, 1.0, None)
-            thickness_norm = thickness / (thickness.max() + 1e-6)
-            
             for iteration in range(iterations):
                 prev = path_smooth.copy()
                 
                 for i in range(1, n - 1):  # Don't smooth endpoints
-                    # Define window
-                    half_win = window // 2
-                    start_idx = max(0, i - half_win)
-                    end_idx = min(n, i + half_win + 1)
+                    # Weighted average with neighbors
+                    window = 7
+                    half_w = window // 2
+                    start_idx = max(0, i - half_w)
+                    end_idx = min(n, i + half_w + 1)
                     
-                    # Gaussian-like weights
+                    # Gaussian weights
                     indices = np.arange(start_idx, end_idx)
-                    weights = np.exp(-0.5 * ((indices - i) / (half_win / 2.5)) ** 2)
+                    weights = np.exp(-0.5 * ((indices - i) / 2.5) ** 2)
+                    weights /= weights.sum()
                     
-                    # Extra weight for thicker regions (more confident centerline)
-                    thickness_weights = thickness_norm[start_idx:end_idx]
-                    combined_weights = weights * (0.5 + 0.5 * thickness_weights)
-                    combined_weights /= combined_weights.sum()
-                    
-                    # Smoothing strength: very high for manual paths
-                    smooth_weight = 0.85  # Very high smoothing
-                    
-                    # Weighted average
+                    # Smooth
                     local_points = prev[start_idx:end_idx]
-                    smoothed_point = (combined_weights[:, None] * local_points).sum(axis=0)
+                    smoothed = (weights[:, None] * local_points).sum(axis=0)
                     
-                    path_smooth[i] = smooth_weight * smoothed_point + (1 - smooth_weight) * prev[i]
+                    # High smoothing factor
+                    alpha = 0.75
+                    path_smooth[i] = alpha * smoothed + (1 - alpha) * prev[i]
+                
+                # Project points back to mask if they went outside
+                for i in range(1, n - 1):
+                    pi = np.round(path_smooth[i]).astype(int)
+                    pi = np.clip(pi, [0, 0], [mask.shape[0]-1, mask.shape[1]-1])
+                    
+                    # If point is outside mask, find nearest valid point
+                    if not mask[pi[0], pi[1]]:
+                        # Search in small neighborhood for nearest valid point
+                        search_radius = 5
+                        found = False
+                        for r in range(1, search_radius + 1):
+                            y_min, y_max = max(0, pi[0]-r), min(mask.shape[0], pi[0]+r+1)
+                            x_min, x_max = max(0, pi[1]-r), min(mask.shape[1], pi[1]+r+1)
+                            local_mask = mask[y_min:y_max, x_min:x_max]
+                            
+                            if local_mask.any():
+                                local_coords = np.argwhere(local_mask)
+                                local_coords[:, 0] += y_min
+                                local_coords[:, 1] += x_min
+                                
+                                # Find nearest valid point
+                                dists = np.sum((local_coords - path_smooth[i]) ** 2, axis=1)
+                                nearest = local_coords[np.argmin(dists)]
+                                path_smooth[i] = nearest.astype(float)
+                                found = True
+                                break
+                        
+                        if not found:
+                            # Keep previous valid position
+                            path_smooth[i] = prev[i]
             
-            # Round back to integers
+            # Final round to integers and clipping
             path_smooth = np.round(path_smooth).astype(int)
-            path_smooth[:, 0] = np.clip(path_smooth[:, 0], 0, seg_mask_bin.shape[0] - 1)
-            path_smooth[:, 1] = np.clip(path_smooth[:, 1], 0, seg_mask_bin.shape[1] - 1)
+            path_smooth[:, 0] = np.clip(path_smooth[:, 0], 0, mask.shape[0] - 1)
+            path_smooth[:, 1] = np.clip(path_smooth[:, 1], 0, mask.shape[1] - 1)
             
             return path_smooth
         
-        # Apply smoothing
-        path_skel_smooth = smooth_path_aggressive(path_skel, dist_skel, iterations=15, window=35)
-        
-        # Optional: Apply spline fitting for ultra-smooth curve
-        if len(path_skel_smooth) >= 4:
-            try:
-                # Parameterize by cumulative distance
-                diffs = np.diff(path_skel_smooth.astype(float), axis=0)
-                segment_lengths = np.sqrt((diffs ** 2).sum(axis=1))
-                t = np.concatenate([[0], np.cumsum(segment_lengths)])
-                t = t / (t[-1] + 1e-9)  # Normalize to [0, 1]
-                
-                # Fit splines with very low smoothing factor for smooth but faithful curve
-                k = min(3, len(path_skel_smooth) - 1)  # Spline degree
-                s_factor = len(path_skel_smooth) * 0.5  # Smoothing factor
-                
-                spline_r = UnivariateSpline(t, path_skel_smooth[:, 0], k=k, s=s_factor)
-                spline_c = UnivariateSpline(t, path_skel_smooth[:, 1], k=k, s=s_factor)
-                
-                # Resample at higher resolution for length calculation
-                t_fine = np.linspace(0, 1, len(path_skel_smooth) * 2)
-                path_spline = np.column_stack([spline_r(t_fine), spline_c(t_fine)])
-                path_spline = np.round(path_spline).astype(int)
-                path_spline[:, 0] = np.clip(path_spline[:, 0], 0, seg_mask_bin.shape[0] - 1)
-                path_spline[:, 1] = np.clip(path_spline[:, 1], 0, seg_mask_bin.shape[1] - 1)
-                
-                path_skel_smooth = path_spline
-            except Exception as e:
-                print(f"Spline fitting failed, using smooth path: {e}")
-                pass
-        
-        # Extend path to exact manual points
-        path = np.vstack([p1.astype(int).reshape(1, 2), path_skel_smooth, p2.astype(int).reshape(1, 2)])
+        # Apply constrained smoothing
+        path = smooth_path_constrained(path, seg_mask_bin, dist_transform, iterations=10)
         
         # Remove duplicate consecutive points
         if len(path) >= 2:
@@ -648,6 +667,26 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         # Compute length along path
         pf = path.astype(float)
         dxy = np.diff(pf, axis=0)
+        seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
+        length = float(seg.sum())
+        
+        # Compute straight-line distance
+        diff = p2 - p1
+        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+        
+        straight_line_points = (tuple(path[0]), tuple(path[-1]))
+        
+        return length, straight_length, path, straight_line_points
+        
+    except Exception as e:
+        print(f"Error in manual length computation: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback: straight line between points
+        diff = p2 - p1
+        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+        path = np.array([p1, p2], dtype=int)
+        return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
         seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
         length = float(seg.sum())
         
