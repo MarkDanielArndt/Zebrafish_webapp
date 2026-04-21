@@ -168,7 +168,7 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
         mask = np.array(PILImage.fromarray(mask).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
     overlay = base.copy().astype(np.float32)
     # fish mask overlay in yellow
-    alpha = 0.35
+    alpha = 0.2  # Reduced opacity for better fish visibility
     yellow = np.zeros_like(overlay)
     yellow[..., 0] = 255
     yellow[..., 1] = 255
@@ -974,11 +974,14 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         
         status = f"✓ Manual points applied! Length: {length:.2f} µm, Straight: {straight_length:.2f} µm, Ratio: {length/straight_length:.3f}"
         
+        # Rebuild feature table to keep it in sync
+        feature_table_data = _build_feature_selection_table(data)
+        
         # Return updated overlay to manual edit window (user can see lines before accordion closes)
-        return data, previews, boxplot_np, status, gr.update(), new_overlay
+        return data, previews, boxplot_np, status, gr.update(), new_overlay, feature_table_data
         
     except Exception as e:
-        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update()
+        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update(), gr.update()
 
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
@@ -1055,8 +1058,6 @@ with gr.Blocks() as demo:
                 reset_points_btn = gr.Button("Reset Points", variant="secondary")
                 apply_manual_btn = gr.Button("Apply Manual Points", variant="primary")
         
-        with gr.Row():
-            gen_filtered_btn = gr.Button("Generate Filtered Excel")
         filenames_list = gr.Markdown("")
         
         # Feature selection table - allows excluding specific features per image
@@ -1079,9 +1080,12 @@ with gr.Blocks() as demo:
                 interactive=True,
                 wrap=True
             )
-        
-        with gr.Row():
-            out_file_filtered = gr.File(label="Download filtered results (.xlsx)")
+            
+            with gr.Row():
+                gen_filtered_btn = gr.Button("Generate Filtered and Corrected Excel", variant="primary")
+            
+            with gr.Row():
+                out_file_filtered = gr.File(label="Download filtered and corrected results (.xlsx)")
 
     # Use files from state, not a giant Files list
     run.click(
@@ -1158,7 +1162,7 @@ with gr.Blocks() as demo:
     apply_manual_btn.click(
         fn=_apply_manual_points,
         inputs=[edit_image_idx, manual_points_temp, data_state],
-        outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image]
+        outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image, feature_table]
     )
 
 if __name__ == "__main__":
