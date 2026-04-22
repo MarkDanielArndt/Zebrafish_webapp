@@ -470,10 +470,7 @@ def process(folder,
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
     
-    # Build feature selection table (all features included by default)
-    feature_table_data = _build_feature_selection_table(data_state)
-    
-    return out_xlsx, boxplot_np, previews, filenames_md, data_state, feature_table_data, spacing_info_md
+    return out_xlsx, boxplot_np, previews, filenames_md, data_state, spacing_info_md
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -481,6 +478,27 @@ def summarize_files(files):
     short = [_shorten_name(n, max_chars=22) for n in names]
     more = f" … and {len(files) - 5} more" if len(files) > 5 else ""
     return "**Uploaded:** " + ", ".join(short) + more
+
+
+def _generate_corrected_excel(data):
+    """Generate a fresh Excel export from the current in-memory results, including manual corrections."""
+    if not data:
+        return None
+
+    out_bytes = write_lengths_to_excel_bytes(
+        data.get('filenames', []),
+        data.get('fish_lengths', []),
+        data.get('curvatures', []),
+        data.get('ratios', []),
+        data.get('threshold_used', False),
+        data.get('threshold_value', 0.0),
+        data.get('boxplot_png', None),
+    )
+    tmpout = tempfile.mkdtemp()
+    out_xlsx = os.path.join(tmpout, "fish_data_corrected.xlsx")
+    with open(out_xlsx, "wb") as f:
+        f.write(out_bytes.getvalue())
+    return out_xlsx
 
 
 
@@ -688,163 +706,6 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
         path = np.array([p1, p2], dtype=int)
         return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
-
-
-
-
-def _generate_filtered_excel(data, feature_selections):
-    """
-    Generate Excel with feature-specific exclusions.
-    feature_selections: dict of {image_idx: {'length': bool, 'curvature': bool, 'ratio': bool}}
-    """
-    if not data:
-        return None
-    
-    feature_selections = feature_selections or {}
-    fnames, Ls, Cs, Rs = [], [], [], []
-    
-    # Check what data we have available
-    has_lengths = 'fish_lengths' in data and data['fish_lengths']
-    has_curvatures = 'curvatures' in data and data['curvatures']
-    has_ratios = 'ratios' in data and data['ratios']
-    
-    for i, name in enumerate(data['filenames']):
-        # Get feature selections for this image (default all True)
-        selections = feature_selections.get(i, {'length': True, 'curvature': True, 'ratio': True})
-        
-        # Check if at least one feature is selected for this image
-        if not any(selections.values()):
-            continue  # Skip image entirely if no features selected
-        
-        fnames.append(name)
-        
-        # Add feature data based on selections
-        if has_lengths:
-            if selections.get('length', True):
-                Ls.append(data['fish_lengths'][i] if i < len(data['fish_lengths']) else "N/A")
-            else:
-                Ls.append("N/A")  # Excluded
-        
-        if has_curvatures:
-            if selections.get('curvature', True):
-                Cs.append(data['curvatures'][i] if i < len(data['curvatures']) else "N/A")
-            else:
-                Cs.append("N/A")  # Excluded
-        
-        if has_ratios:
-            if selections.get('ratio', True):
-                Rs.append(data['ratios'][i] if i < len(data['ratios']) else "N/A")
-            else:
-                Rs.append("N/A")  # Excluded
-    
-    # Pass empty lists for features that weren't processed
-    if not has_lengths:
-        Ls = []
-    if not has_curvatures:
-        Cs = []
-    if not has_ratios:
-        Rs = []
-    
-    out_bytes = write_lengths_to_excel_bytes(fnames, Ls, Cs, Rs, data.get('threshold_used', False), data.get('threshold_value', 0.0), data.get('boxplot_png', None))
-    tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data_filtered.xlsx")
-    with open(out_xlsx, "wb") as f:
-        f.write(out_bytes.getvalue())
-    return out_xlsx
-
-
-def _build_feature_selection_table(data, feature_selections=None):
-    """Build a dataframe for feature selection per image"""
-    if not data or 'filenames' not in data:
-        return []
-    
-    rows = []
-    for i, filename in enumerate(data['filenames']):
-        short_name = _shorten_name(filename, max_chars=30)
-        # Preserve existing selections if available, otherwise default to True
-        if feature_selections and i in feature_selections:
-            length_sel = feature_selections[i].get('length', True)
-            curv_sel = feature_selections[i].get('curvature', True)
-            ratio_sel = feature_selections[i].get('ratio', True)
-        else:
-            length_sel = curv_sel = ratio_sel = True
-        rows.append([i, short_name, length_sel, curv_sel, ratio_sel])
-    
-    return rows
-
-
-def _update_from_feature_table(table_data, data):
-    """Convert table data (list/dict/DataFrame) to feature selections dict."""
-    if table_data is None or not data or 'filenames' not in data:
-        return {}
-
-    def _to_bool_cell(value):
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            return bool(value)
-        if isinstance(value, str):
-            v = value.strip().lower()
-            if v in {"true", "1", "yes", "y", "on"}:
-                return True
-            if v in {"false", "0", "no", "n", "off", ""}:
-                return False
-        return bool(value)
-
-    rows = []
-    # Gradio may send pandas.DataFrame or pandas-like object
-    if hasattr(table_data, "to_dict") and callable(getattr(table_data, "to_dict")):
-        try:
-            rows = table_data.to_dict(orient="records")
-        except Exception:
-            rows = []
-    elif isinstance(table_data, np.ndarray):
-        rows = table_data.tolist()
-    elif isinstance(table_data, list):
-        rows = table_data
-
-    if not rows:
-        return {}
-
-    feature_selections = {}
-    n_files = len(data.get('filenames', []))
-
-    for row in rows:
-        idx = None
-        length_raw = True
-        curvature_raw = True
-        ratio_raw = True
-
-        if isinstance(row, dict):
-            idx = row.get('#', row.get('0', row.get(0)))
-            length_raw = row.get('Length', row.get('2', row.get(2, True)))
-            curvature_raw = row.get('Curvature', row.get('3', row.get(3, True)))
-            ratio_raw = row.get('Ratio', row.get('4', row.get(4, True)))
-        elif isinstance(row, (list, tuple)) and len(row) >= 5:
-            idx = row[0]
-            length_raw = row[2]
-            curvature_raw = row[3]
-            ratio_raw = row[4]
-        else:
-            continue
-
-        try:
-            idx = int(float(idx))
-        except Exception:
-            continue
-
-        if idx < 0 or idx >= n_files:
-            continue
-
-        feature_selections[idx] = {
-            'length': _to_bool_cell(length_raw),
-            'curvature': _to_bool_cell(curvature_raw),
-            'ratio': _to_bool_cell(ratio_raw),
-        }
-
-    return feature_selections
-
-
-
 def _enter_manual_mode(evt: gr.SelectData, data):
     """Enter manual editing mode for selected image"""
     if data is None:
@@ -947,17 +808,17 @@ def _reset_manual_points(edit_idx, manual_points_temp, data):
     return manual_points_temp, None, "No image selected"
 
 
-def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections):
+def _apply_manual_points(edit_idx, manual_points_temp, data):
     """Apply manual points and recalculate length for the selected image"""
     if data is None or edit_idx < 0:
-        return data, gr.update(), gr.update(), "No data or image selected", gr.update(), gr.update(), gr.update()
+        return data, gr.update(), gr.update(), "No data or image selected", gr.update(), gr.update()
     
     if manual_points_temp is None or edit_idx not in manual_points_temp:
-        return data, gr.update(), gr.update(), "No manual points set for this image", gr.update(), gr.update(), gr.update()
+        return data, gr.update(), gr.update(), "No manual points set for this image", gr.update(), gr.update()
     
     points_list = manual_points_temp[edit_idx]
     if len(points_list) != 2:
-        return data, gr.update(), gr.update(), "Need exactly 2 points (head and tail)", gr.update(), gr.update(), gr.update()
+        return data, gr.update(), gr.update(), "Need exactly 2 points (head and tail)", gr.update(), gr.update()
     
     # Get the image data
     seg_mask = data['segmented_images'][edit_idx]
@@ -1061,12 +922,11 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
         
         status = f"✓ Manual points applied! Length: {length:.2f} µm, Straight: {straight_length:.2f} µm, Ratio: {length/straight_length:.3f}"
 
-        # Keep feature table unchanged in manual mode so image names stay stable.
         # Return updated overlay to manual edit window (user can see lines before accordion closes)
-        return data, previews, boxplot_np, status, gr.update(), new_overlay_manual, gr.update()
+        return data, previews, boxplot_np, status, gr.update(), new_overlay_manual
         
     except Exception as e:
-        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update(), gr.update()
+        return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update()
 
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
@@ -1090,9 +950,8 @@ with gr.Blocks() as demo:
     # When user uploads via button, store them and update the compact summary
     upload_btn.upload(fn=lambda f: (f, summarize_files(f)), inputs=upload_btn, outputs=[files_state, files_summary])
 
-    # Hidden states for interactive filtering (populated after Run)
+    # Hidden states for interactive results (populated after Run)
     data_state = gr.State(None)
-    feature_selections_state = gr.State({})
     manual_points_temp = gr.State({})
     edit_image_idx = gr.State(-1)
 
@@ -1145,38 +1004,24 @@ with gr.Blocks() as demo:
         
         filenames_list = gr.Markdown("")
         
-        # Feature selection table - allows excluding specific features per image
-        with gr.Accordion("📊 Feature Selection per Image", open=False):
+        with gr.Accordion("📄 Corrected Excel Export", open=False):
             gr.Markdown("""
-            **Select which features to include for each image.**
-            
-            Uncheck a feature to exclude it from the statistics and Excel export for that specific image.
-            For example, if an image has good length measurement but poor curvature detection, 
-            you can uncheck only the curvature for that image.
-            
-            **Tip:** All features are included by default.
+            Create a fresh Excel export from the current results in memory.
+
+            If you adjusted manual points, this export will include the updated length and ratio values.
             """)
-            
-            feature_table = gr.Dataframe(
-                headers=["#", "Image", "Length", "Curvature", "Ratio"],
-                datatype=["number", "str", "bool", "bool", "bool"],
-                col_count=(5, "fixed"),
-                label="Select features to include (check = include, uncheck = exclude)",
-                interactive=True,
-                wrap=True
-            )
-            
+
             with gr.Row():
-                gen_filtered_btn = gr.Button("Generate Filtered and Corrected Excel", variant="primary")
-            
+                gen_corrected_btn = gr.Button("Generate Corrected Excel", variant="primary")
+
             with gr.Row():
-                out_file_filtered = gr.File(label="Download filtered and corrected results (.xlsx)")
+                out_file_corrected = gr.File(label="Download corrected results (.xlsx)")
 
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
         inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_thr, thr_val, phys_w_um, phys_h_um],
-        outputs=[out_file, out_box, gallery, filenames_list, data_state, feature_table, spacing_used_md]
+        outputs=[out_file, out_box, gallery, filenames_list, data_state, spacing_used_md]
     )
 
     # Gallery click handler - only prepares for manual editing
@@ -1216,23 +1061,10 @@ with gr.Blocks() as demo:
         outputs=[manual_edit_image, edit_image_idx, manual_edit_instructions]
     )
 
-    # When feature table is edited, update feature_selections_state
-    feature_table.change(
-        fn=_update_from_feature_table,
-        inputs=[feature_table, data_state],
-        outputs=[feature_selections_state]
-    )
-
-    # Generate filtered Excel based on feature table selections
-    def _generate_excel_from_table(table_data, data):
-        """Generate Excel using feature selections from table"""
-        feature_selections = _update_from_feature_table(table_data, data)
-        return _generate_filtered_excel(data, feature_selections)
-    
-    gen_filtered_btn.click(
-        fn=_generate_excel_from_table, 
-        inputs=[feature_table, data_state], 
-        outputs=[out_file_filtered]
+    gen_corrected_btn.click(
+        fn=_generate_corrected_excel,
+        inputs=[data_state],
+        outputs=[out_file_corrected]
     )
     
     # When manual edit image is clicked, record the point
@@ -1252,8 +1084,8 @@ with gr.Blocks() as demo:
     # Apply manual points button
     apply_manual_btn.click(
         fn=_apply_manual_points,
-        inputs=[edit_image_idx, manual_points_temp, data_state, feature_selections_state],
-        outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image, feature_table]
+        inputs=[edit_image_idx, manual_points_temp, data_state],
+        outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image]
     )
 
 if __name__ == "__main__":
