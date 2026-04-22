@@ -8,12 +8,12 @@ from huggingface_hub import hf_hub_download
 
 target_size = (256, 256)
 
-def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False):
+def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16"):
     """
     Load a binary Unet model from a local path or from Hugging Face Hub.
     Returns the model instance when successful, otherwise None.
     """
-    model = Unet(encoder_name="vgg16", encoder_weights="imagenet", in_channels=3, classes=1)
+    model = Unet(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
     resolved_path = None
 
     if model_path and os.path.exists(model_path):
@@ -50,12 +50,14 @@ def segmentation_pipeline(
     folder_path,
     include_eyes=False,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    body_model_filename="best_model_7.pth",
+    body_model_filename="best_model_body_3400_vgg19.pth",
+    body_encoder_name="vgg19",
     body_revision="main",
     body_force_download=True,
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
     eye_model_filename="best_model_eyes_combined_230226.pth",
+    eye_encoder_name="vgg16",
 ):
     """
     Perform body segmentation on all images in the specified folder.
@@ -79,6 +81,7 @@ def segmentation_pipeline(
         label="body model",
         revision=body_revision,
         force_download=body_force_download,
+        encoder_name=body_encoder_name,
     )
 
     if loaded_model is None:
@@ -92,6 +95,7 @@ def segmentation_pipeline(
             repo_id=eye_repo_id,
             filename=eye_model_filename,
             label="eye model",
+            encoder_name=eye_encoder_name,
         )
         if eyes_model is None:
             print(f"WARNING: Eye model unavailable at {eye_repo_id}/{eye_model_filename}. Returning empty eye masks.")

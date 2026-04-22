@@ -883,11 +883,11 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
         return data, gr.update(), gr.update(), "No data or image selected", gr.update(), gr.update(), gr.update()
     
     if manual_points_temp is None or edit_idx not in manual_points_temp:
-        return data, gr.update(), gr.update(), "No manual points set for this image"
+        return data, gr.update(), gr.update(), "No manual points set for this image", gr.update(), gr.update(), gr.update()
     
     points_list = manual_points_temp[edit_idx]
     if len(points_list) != 2:
-        return data, gr.update(), gr.update(), "Need exactly 2 points (head and tail)"
+        return data, gr.update(), gr.update(), "Need exactly 2 points (head and tail)", gr.update(), gr.update(), gr.update()
     
     # Get the image data
     seg_mask = data['segmented_images'][edit_idx]
@@ -980,12 +980,10 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
         data['boxplot_png'] = boxplot_png
         
         status = f"✓ Manual points applied! Length: {length:.2f} µm, Straight: {straight_length:.2f} µm, Ratio: {length/straight_length:.3f}"
-        
-        # Rebuild feature table to keep it in sync, preserving user's checkbox states
-        feature_table_data = _build_feature_selection_table(data, feature_selections)
-        
+
+        # Keep feature table unchanged in manual mode so image names stay stable.
         # Return updated overlay to manual edit window (user can see lines before accordion closes)
-        return data, previews, boxplot_np, status, gr.update(), new_overlay, feature_table_data
+        return data, previews, boxplot_np, status, gr.update(), new_overlay, gr.update()
         
     except Exception as e:
         return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update(), gr.update()
