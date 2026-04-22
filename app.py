@@ -161,14 +161,17 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
     else: m = (m > 127).astype(np.uint8) * 255
     return m
 
-def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None) -> np.ndarray:
+GALLERY_MASK_ALPHA = 0.45
+MANUAL_MASK_ALPHA = 0.15
+
+def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, mask_alpha=GALLERY_MASK_ALPHA) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
     if mask.shape[:2] != base.shape[:2]:
         mask = np.array(PILImage.fromarray(mask).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
     overlay = base.copy().astype(np.float32)
     # fish mask overlay in yellow
-    alpha = 0.2  # Reduced opacity for better fish visibility
+    alpha = float(np.clip(mask_alpha, 0.0, 1.0))
     yellow = np.zeros_like(overlay)
     yellow[..., 0] = 255
     yellow[..., 1] = 255
@@ -385,15 +388,16 @@ def process(folder,
             # Use the new tube_length_border2border function
             try:
                 seg_mask_bin = seg_mask > 0
+                eye_mask_for_length = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
                 spacing = (y_scale, x_scale)
                 print(f"spacing:{spacing}")
-                # Don't use eye mask in length calculation (mask_eye=None)
+                # Use eye mask when available to stabilize head-side start point.
                 length, straight_length, path_points, straight_line_points = tube_length_border2border(
                     seg_mask_bin,
                     spacing=spacing,
                     return_path=True,
                     return_straight_line=True,
-                    mask_eye=None,
+                    mask_eye=eye_mask_for_length,
                     return_eye_info=False,
                 )
                 fish_lengths.append(float(length))
@@ -801,7 +805,13 @@ def _enter_manual_mode(evt: gr.SelectData, data):
     seg_mask = data['segmented_images'][idx]
     
     # Create a composite showing original + segmentation overlay
-    display_img = _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None)
+    display_img = _make_seg_overlay(
+        original_img,
+        seg_mask,
+        path_points=None,
+        straight_line_points=None,
+        mask_alpha=MANUAL_MASK_ALPHA,
+    )
     
     filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
     instructions = f"**Editing: {filename}**\n\nClick on the image to set points:\n1. First click = HEAD (start point)\n2. Second click = TAIL (end point)\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
@@ -871,7 +881,13 @@ def _reset_manual_points(edit_idx, manual_points_temp, data):
     if data and edit_idx >= 0 and edit_idx < len(data.get('original_images', [])):
         original_img = data['original_images'][edit_idx]
         seg_mask = data['segmented_images'][edit_idx]
-        display_img = _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None)
+        display_img = _make_seg_overlay(
+            original_img,
+            seg_mask,
+            path_points=None,
+            straight_line_points=None,
+            mask_alpha=MANUAL_MASK_ALPHA,
+        )
         return manual_points_temp, display_img, "Points reset. Click to set HEAD point."
     
     return manual_points_temp, None, "No image selected"
@@ -901,7 +917,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
     
     # Get display image size (now full resolution)
     original_img = data['original_images'][edit_idx]
-    display_overlay = _make_seg_overlay(original_img, seg_mask)
+    display_overlay = _make_seg_overlay(original_img, seg_mask, mask_alpha=MANUAL_MASK_ALPHA)
     h_display, w_display = display_overlay.shape[:2]
     
     # Scale points from display to mask coordinates
@@ -941,12 +957,22 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
         
         # Regenerate preview for this image
         eye_mask = data.get('eyes_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('eyes_images', [])) else None
-        new_overlay = _make_seg_overlay(
+        new_overlay_gallery = _make_seg_overlay(
             original_img,
             seg_mask,
             path_points=path,
             straight_line_points=straight_line_points,
-            eye_mask=eye_mask
+            eye_mask=eye_mask,
+            mask_alpha=GALLERY_MASK_ALPHA,
+        )
+
+        new_overlay_manual = _make_seg_overlay(
+            original_img,
+            seg_mask,
+            path_points=path,
+            straight_line_points=straight_line_points,
+            eye_mask=eye_mask,
+            mask_alpha=MANUAL_MASK_ALPHA,
         )
         
         # Update the specific preview
@@ -954,7 +980,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
             original_name = data['filenames'][edit_idx] if edit_idx < len(data['filenames']) else f"image_{edit_idx}"
             short = _shorten_name(original_name, max_chars=22)
             cap = f"{edit_idx}:{short} (manual)"
-            data['original_previews'][edit_idx] = [new_overlay, cap]
+            data['original_previews'][edit_idx] = [new_overlay_gallery, cap]
         
         # Rebuild all previews with updated one
         previews = []
@@ -983,7 +1009,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data, feature_selections)
 
         # Keep feature table unchanged in manual mode so image names stay stable.
         # Return updated overlay to manual edit window (user can see lines before accordion closes)
-        return data, previews, boxplot_np, status, gr.update(), new_overlay, gr.update()
+        return data, previews, boxplot_np, status, gr.update(), new_overlay_manual, gr.update()
         
     except Exception as e:
         return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update(), gr.update()
@@ -1116,7 +1142,13 @@ with gr.Blocks() as demo:
             else:
                 original_img = data['original_images'][idx]
                 seg_mask = data['segmented_images'][idx]
-                manual_img = _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None)
+                manual_img = _make_seg_overlay(
+                    original_img,
+                    seg_mask,
+                    path_points=None,
+                    straight_line_points=None,
+                    mask_alpha=MANUAL_MASK_ALPHA,
+                )
                 manual_idx = idx
                 filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
                 manual_instr = f"**Selected: {filename}**\n\nClick on the image below to set points:\n- **First click** = HEAD (start point) - shown in GREEN\n- **Second click** = TAIL (end point) - shown in RED\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
