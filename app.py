@@ -773,20 +773,74 @@ def _build_feature_selection_table(data, feature_selections=None):
 
 
 def _update_from_feature_table(table_data, data):
-    """Convert table data to feature selections dict"""
-    if not table_data or not data:
+    """Convert table data (list/dict/DataFrame) to feature selections dict."""
+    if table_data is None or not data or 'filenames' not in data:
         return {}
-    
+
+    def _to_bool_cell(value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            return bool(value)
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in {"true", "1", "yes", "y", "on"}:
+                return True
+            if v in {"false", "0", "no", "n", "off", ""}:
+                return False
+        return bool(value)
+
+    rows = []
+    # Gradio may send pandas.DataFrame or pandas-like object
+    if hasattr(table_data, "to_dict") and callable(getattr(table_data, "to_dict")):
+        try:
+            rows = table_data.to_dict(orient="records")
+        except Exception:
+            rows = []
+    elif isinstance(table_data, np.ndarray):
+        rows = table_data.tolist()
+    elif isinstance(table_data, list):
+        rows = table_data
+
+    if not rows:
+        return {}
+
     feature_selections = {}
-    for row in table_data:
-        if len(row) >= 5:
-            idx = int(row[0])
-            feature_selections[idx] = {
-                'length': bool(row[2]),
-                'curvature': bool(row[3]),
-                'ratio': bool(row[4])
-            }
-    
+    n_files = len(data.get('filenames', []))
+
+    for row in rows:
+        idx = None
+        length_raw = True
+        curvature_raw = True
+        ratio_raw = True
+
+        if isinstance(row, dict):
+            idx = row.get('#', row.get('0', row.get(0)))
+            length_raw = row.get('Length', row.get('2', row.get(2, True)))
+            curvature_raw = row.get('Curvature', row.get('3', row.get(3, True)))
+            ratio_raw = row.get('Ratio', row.get('4', row.get(4, True)))
+        elif isinstance(row, (list, tuple)) and len(row) >= 5:
+            idx = row[0]
+            length_raw = row[2]
+            curvature_raw = row[3]
+            ratio_raw = row[4]
+        else:
+            continue
+
+        try:
+            idx = int(float(idx))
+        except Exception:
+            continue
+
+        if idx < 0 or idx >= n_files:
+            continue
+
+        feature_selections[idx] = {
+            'length': _to_bool_cell(length_raw),
+            'curvature': _to_bool_cell(curvature_raw),
+            'ratio': _to_bool_cell(ratio_raw),
+        }
+
     return feature_selections
 
 
