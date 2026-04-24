@@ -2,7 +2,7 @@ import gradio as gr
 import tempfile, os, shutil
 from typing import List, Optional, Tuple
 from seg import segmentation_pipeline
-from length import load_model, get_fish_length_circles_fixed, classification_curvature, tube_length_border2border
+from length import load_model, get_fish_length_circles_fixed, classification_curvature, tube_length_border2border, compute_eye_metrics
 import openpyxl, io
 from openpyxl.drawing.image import Image as ExcelImage
 import matplotlib.pyplot as plt
@@ -47,31 +47,62 @@ def _to_numpy(img):
             img = ((img - img_min) / denom * 255.0).clip(0,255).astype(np.uint8)
     return img
 
-def _make_boxplots_image(fish_lengths, curvatures, ratios):
+def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, eye_diameters=None):
+    def _clean_numeric(vals):
+        out = []
+        for v in (vals or []):
+            if isinstance(v, (int, float)) and np.isfinite(v):
+                out.append(float(v))
+        return out
+
+    fish_lengths_clean = _clean_numeric(fish_lengths)
+    curvatures_clean = _clean_numeric(curvatures)
+    ratios_clean = _clean_numeric(ratios)
+    eye_areas_clean = _clean_numeric(eye_areas)
+    eye_diameters_clean = _clean_numeric(eye_diameters)
+
     # Count how many plots we need
-    num_plots = sum([bool(fish_lengths), bool(curvatures), bool(ratios)])
+    num_plots = sum([
+        bool(fish_lengths_clean),
+        bool(curvatures_clean),
+        bool(ratios_clean),
+        bool(eye_areas_clean),
+        bool(eye_diameters_clean),
+    ])
     if num_plots == 0:
         num_plots = 1  # At least one subplot
     
     fig = plt.figure(figsize=(5*num_plots, 5))
     plot_idx = 1
     
-    if fish_lengths:
+    if fish_lengths_clean:
         plt.subplot(1, num_plots, plot_idx)
-        plt.boxplot(fish_lengths, vert=True, patch_artist=True)
+        plt.boxplot(fish_lengths_clean, vert=True, patch_artist=True)
         plt.title("Fish Lengths"); plt.ylabel("Length (µm)")
         plot_idx += 1
     
-    if curvatures:
+    if curvatures_clean:
         plt.subplot(1, num_plots, plot_idx)
-        plt.boxplot(curvatures, vert=True, patch_artist=True)
+        plt.boxplot(curvatures_clean, vert=True, patch_artist=True)
         plt.title("Curvatures"); plt.ylabel("Curvature")
         plot_idx += 1
     
-    if ratios:
+    if ratios_clean:
         plt.subplot(1, num_plots, plot_idx)
-        plt.boxplot(ratios, vert=True, patch_artist=True)
+        plt.boxplot(ratios_clean, vert=True, patch_artist=True)
         plt.title("Length/Straight Line Ratio"); plt.ylabel("Ratio")
+        plot_idx += 1
+
+    if eye_areas_clean:
+        plt.subplot(1, num_plots, plot_idx)
+        plt.boxplot(eye_areas_clean, vert=True, patch_artist=True)
+        plt.title("Eye Areas"); plt.ylabel("Area (µm²)")
+        plot_idx += 1
+
+    if eye_diameters_clean:
+        plt.subplot(1, num_plots, plot_idx)
+        plt.boxplot(eye_diameters_clean, vert=True, patch_artist=True)
+        plt.title("Eye Diameters"); plt.ylabel("Diameter (µm)")
     
     img_bytes = io.BytesIO()
     plt.tight_layout()
@@ -80,7 +111,17 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios):
     img_bytes.seek(0)
     return img_bytes.getvalue()
 
-def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, threshold_used, threshold_value, boxplot_png_bytes):
+def write_lengths_to_excel_bytes(
+    filenames,
+    fish_lengths,
+    curvatures,
+    ratios,
+    eye_areas,
+    eye_diameters,
+    threshold_used,
+    threshold_value,
+    boxplot_png_bytes,
+):
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = "Fish Data"
@@ -89,6 +130,8 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, th
     if fish_lengths: header.append("Fish Length (µm)")
     if curvatures: header.append("Curvature")
     if ratios: header.append("Length/Straight Line Ratio")
+    if eye_areas: header.append("Eye Area (µm²)")
+    if eye_diameters: header.append("Eye Diameter (µm)")
     sh.append(header)
     
     for i, fname in enumerate(filenames):
@@ -104,11 +147,21 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, th
         if ratios:
             r = ratios[i] if i < len(ratios) else "N/A"
             row.append(r)
+        if eye_areas:
+            ea = eye_areas[i] if i < len(eye_areas) and eye_areas[i] is not None else "N/A"
+            row.append(ea)
+        if eye_diameters:
+            ed = eye_diameters[i] if i < len(eye_diameters) and eye_diameters[i] is not None else "N/A"
+            row.append(ed)
         sh.append(row)
 
     def _stats(vals):
-        if not vals: return ("N/A",)*5
-        vals_sorted = sorted(vals); n = len(vals_sorted)
+        clean_vals = []
+        for v in vals:
+            if isinstance(v, (int, float)) and np.isfinite(v):
+                clean_vals.append(float(v))
+        if not clean_vals: return ("N/A",)*5
+        vals_sorted = sorted(clean_vals); n = len(vals_sorted)
         median = vals_sorted[n//2]
         p25 = vals_sorted[int(n*0.25)]
         p75 = vals_sorted[int(n*0.75)]
@@ -138,6 +191,18 @@ def write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, th
         sh.append(["Median Ratio", medR]); sh.append(["25th Percentile Ratio", p25R])
         sh.append(["75th Percentile Ratio", p75R]); sh.append(["Mean Ratio", meanR])
         sh.append(["Standard Deviation Ratio", stdR])
+
+    if eye_areas:
+        medEA,p25EA,p75EA,meanEA,stdEA = _stats(eye_areas)
+        sh.append(["Median Eye Area (µm²)", medEA]); sh.append(["25th Percentile Eye Area (µm²)", p25EA])
+        sh.append(["75th Percentile Eye Area (µm²)", p75EA]); sh.append(["Mean Eye Area (µm²)", meanEA])
+        sh.append(["Standard Deviation Eye Area (µm²)", stdEA])
+
+    if eye_diameters:
+        medED,p25ED,p75ED,meanED,stdED = _stats(eye_diameters)
+        sh.append(["Median Eye Diameter (µm)", medED]); sh.append(["25th Percentile Eye Diameter (µm)", p25ED])
+        sh.append(["75th Percentile Eye Diameter (µm)", p75ED]); sh.append(["Mean Eye Diameter (µm)", meanED])
+        sh.append(["Standard Deviation Eye Diameter (µm)", stdED])
     sh.append([]); sh.append(["Class Distribution"])
     cls_counts = [0,0,0,0,0]
     for c in curvatures:
@@ -332,6 +397,7 @@ def process(folder,
             process_curvature=True,
             process_length=True,
             process_ratio=True,
+            process_eye_size=True,
             use_threshold=False,
             threshold_value=0.5,
             physical_horizontal_um_str="",
@@ -362,11 +428,12 @@ def process(folder,
             f"(H=W=5885 µm over 256 px)"
         )
 
-    fish_lengths, curvatures, ratios, previews = [], [], [], []
+    fish_lengths, curvatures, ratios, eye_areas, eye_diameters, previews = [], [], [], [], [], []
     for i, seg_mask in enumerate(segmented_images):
         path_points = None
         straight_line_points = None
         eye_mask_for_vis = eyes_images[i] if i < len(eyes_images) else None
+        seg_mask_bin = seg_mask > 0
 
         # Per-image pixel scales derived from user-provided physical distances
         h, w = seg_mask.shape[:2]
@@ -387,7 +454,6 @@ def process(folder,
         if process_length:
             # Use the new tube_length_border2border function
             try:
-                seg_mask_bin = seg_mask > 0
                 eye_mask_for_length = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
                 spacing = (y_scale, x_scale)
                 print(f"spacing:{spacing}")
@@ -413,6 +479,21 @@ def process(folder,
                 print(f"Error calculating length for image {i}: {e}")
                 pass
 
+        if process_eye_size:
+            try:
+                eye_mask_for_metrics = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
+                eye_info = compute_eye_metrics(
+                    eye_mask_for_metrics,
+                    mask_fish=seg_mask_bin,
+                    spacing=(y_scale, x_scale),
+                )
+                eye_areas.append(float(eye_info.get("eye_area", 0.0)))
+                eye_diameters.append(float(eye_info.get("eye_diameter", 0.0)))
+            except Exception as e:
+                print(f"Error calculating eye metrics for image {i}: {e}")
+                eye_areas.append(None)
+                eye_diameters.append(None)
+
         if process_curvature:
             try:
                 _, curv = classification_curvature(original_images[i], grown_images[i], model, use_threshold, threshold_value)
@@ -436,9 +517,19 @@ def process(folder,
         except Exception:
             pass
 
-    boxplot_png = _make_boxplots_image(fish_lengths, curvatures, ratios)
+    boxplot_png = _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas, eye_diameters)
     boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
-    out_bytes = write_lengths_to_excel_bytes(filenames, fish_lengths, curvatures, ratios, use_threshold, threshold_value, boxplot_png)
+    out_bytes = write_lengths_to_excel_bytes(
+        filenames,
+        fish_lengths,
+        curvatures,
+        ratios,
+        eye_areas,
+        eye_diameters,
+        use_threshold,
+        threshold_value,
+        boxplot_png,
+    )
     tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data.xlsx")
     with open(out_xlsx, "wb") as f: f.write(out_bytes.getvalue())
     # Prepare state for interactive filtering
@@ -455,6 +546,8 @@ def process(folder,
         'fish_lengths': fish_lengths,
         'curvatures': curvatures,
         'ratios': ratios,
+        'eye_areas': eye_areas,
+        'eye_diameters': eye_diameters,
         'boxplot_png': boxplot_png,
         'threshold_used': use_threshold,
         'threshold_value': threshold_value,
@@ -490,6 +583,8 @@ def _generate_corrected_excel(data):
         data.get('fish_lengths', []),
         data.get('curvatures', []),
         data.get('ratios', []),
+        data.get('eye_areas', []),
+        data.get('eye_diameters', []),
         data.get('threshold_used', False),
         data.get('threshold_value', 0.0),
         data.get('boxplot_png', None),
@@ -915,7 +1010,9 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         boxplot_png = _make_boxplots_image(
             data.get('fish_lengths', []),
             data.get('curvatures', []),
-            data.get('ratios', [])
+            data.get('ratios', []),
+            data.get('eye_areas', []),
+            data.get('eye_diameters', []),
         )
         boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
         data['boxplot_png'] = boxplot_png
@@ -959,6 +1056,7 @@ with gr.Blocks() as demo:
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
         chk_len  = gr.Checkbox(value=True, label="Process Length")
         chk_ratio = gr.Checkbox(value=True, label="Process Length/Straight Line Ratio")
+        chk_eye = gr.Checkbox(value=True, label="Process Eye Size")
         chk_thr  = gr.Checkbox(value=False, label="Use Threshold", visible=False)
         thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value", visible=False)
 
@@ -1020,7 +1118,7 @@ with gr.Blocks() as demo:
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
-        inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_thr, thr_val, phys_w_um, phys_h_um],
+        inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_eye, chk_thr, thr_val, phys_w_um, phys_h_um],
         outputs=[out_file, out_box, gallery, filenames_list, data_state, spacing_used_md]
     )
 

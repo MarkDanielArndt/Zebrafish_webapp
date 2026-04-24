@@ -56,7 +56,7 @@ def segmentation_pipeline(
     body_force_download=True,
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    eye_model_filename="best_model_eyes_combined_230226.pth",
+    eye_model_filename="best_model_eye_3400.pth",
     eye_encoder_name="vgg16",
 ):
     """
