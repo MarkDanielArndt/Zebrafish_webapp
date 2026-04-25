@@ -11,4 +11,10 @@ matplotlib
 openpyxl
 scikit-image
 scipy
+# Optional: for automatic scale bar detection via OCR.
+# Also requires the Tesseract binary:
+#   Windows: https://github.com/UB-Mannheim/tesseract/wiki
+#   Linux:   sudo apt install tesseract-ocr
+#   macOS:   brew install tesseract
+pytesseract
 

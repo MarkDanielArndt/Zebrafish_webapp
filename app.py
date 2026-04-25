@@ -16,6 +16,12 @@ try:
 except Exception:
     _HAS_TORCH = False
 
+try:
+    from scalebar import detect_scalebar as _detect_scalebar
+    _HAS_SCALEBAR = True
+except Exception:
+    _HAS_SCALEBAR = False
+
 MODEL = None  # lazy-loaded
 
 def _ensure_model():
@@ -391,6 +397,94 @@ def _safe_float(s, default=None):
         return float(s)
     except Exception:
         return default
+
+
+def _get_first_image_path(folder_input, files) -> Optional[str]:
+    """Return the path to the first image in whichever upload was provided."""
+    exts = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
+
+    def _get_path(x):
+        if isinstance(x, str):
+            return x
+        return getattr(x, 'name', None)
+
+    # Folder upload (list of file paths)
+    if isinstance(folder_input, (list, tuple)) and len(folder_input) > 0:
+        paths = []
+        for item in folder_input:
+            p = _get_path(item)
+            if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in exts:
+                paths.append(p)
+        if paths:
+            return sorted(paths)[0]
+
+    # Folder upload (single directory path)
+    if isinstance(folder_input, str) and os.path.isdir(folder_input):
+        names = sorted([n for n in os.listdir(folder_input)
+                        if os.path.splitext(n)[1].lower() in exts])
+        if names:
+            return os.path.join(folder_input, names[0])
+
+    # Individual file upload
+    if isinstance(files, (list, tuple)) and len(files) > 0:
+        for f in files:
+            p = _get_path(f)
+            if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in exts:
+                return p
+
+    return None
+
+
+def _run_scalebar_detection(folder_input, files):
+    """
+    Detect scale bar from the first uploaded image.
+
+    Returns (preview_update, status_md, phys_w_update, phys_h_update)
+    where *_update values are gr.update() objects.
+    """
+    no_img_update = gr.update(visible=False)
+
+    first_path = _get_first_image_path(folder_input, files)
+    if first_path is None:
+        return (no_img_update,
+                "Upload images first, then click **Detect Scale Bar**.",
+                gr.update(), gr.update())
+
+    # Load image
+    try:
+        img_bgr = cv2.imread(first_path, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            pil = PILImage.open(first_path).convert('RGB')
+            img_rgb = np.array(pil)
+        else:
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    except Exception as e:
+        return (no_img_update, f"⚠ Could not load image: {e}",
+                gr.update(), gr.update())
+
+    if not _HAS_SCALEBAR:
+        return (gr.update(value=img_rgb, visible=True),
+                "⚠ `scalebar` module could not be imported.",
+                gr.update(), gr.update())
+
+    result = _detect_scalebar(img_rgb)
+    debug_img = result.get('debug_img') or img_rgb
+
+    if result['success']:
+        phys_w = f"{result['phys_width_um']:.1f}"
+        phys_h = f"{result['phys_height_um']:.1f}"
+        status = f"✅ **Auto-detected:** {result['message']}"
+        return (gr.update(value=debug_img, visible=True),
+                status,
+                gr.update(value=phys_w),
+                gr.update(value=phys_h))
+    else:
+        status = f"⚠ **Detection failed:** {result['message']}"
+        return (gr.update(value=debug_img, visible=True),
+                status,
+                gr.update(),
+                gr.update())
+
 
 def process(folder,
             files: Optional[List[gr.File]],
@@ -1045,12 +1139,33 @@ with gr.Blocks() as demo:
     files_state = gr.State([])
 
     # When user uploads via button, store them and update the compact summary
-    upload_btn.upload(fn=lambda f: (f, summarize_files(f)), inputs=upload_btn, outputs=[files_state, files_summary])
+    _upload_event = upload_btn.upload(
+        fn=lambda f: (f, summarize_files(f)),
+        inputs=upload_btn,
+        outputs=[files_state, files_summary])
 
     # Hidden states for interactive results (populated after Run)
     data_state = gr.State(None)
     manual_points_temp = gr.State({})
     edit_image_idx = gr.State(-1)
+
+    # --- Scale bar auto-detection ---
+    with gr.Accordion("📏 Scale Bar Auto-Detection", open=True):
+        gr.Markdown(
+            "Automatically reads the scale bar from the **first uploaded image** "
+            "to calibrate pixel → µm conversion. "
+            "Detected values are pre-filled in the distance fields below. "
+            "You can always edit them manually."
+        )
+        with gr.Row():
+            detect_scalebar_btn = gr.Button(
+                "🔍 Detect Scale Bar from First Image", variant="secondary")
+        scalebar_preview = gr.Image(
+            label="First image – detected scale bar highlighted (green = bar, orange = OCR region)",
+            type="numpy", visible=False)
+        scalebar_status_md = gr.Markdown(
+            "Upload images, then click **Detect Scale Bar** to auto-calibrate, "
+            "or enter physical distances manually below.")
 
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
@@ -1060,10 +1175,14 @@ with gr.Blocks() as demo:
         chk_thr  = gr.Checkbox(value=False, label="Use Threshold", visible=False)
         thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value", visible=False)
 
-    # --- New physical distance inputs (µm), placed just above Run button ---
+    # --- Physical distance inputs – auto-filled by scale bar detection, or enter manually ---
     with gr.Row():
-        phys_w_um = gr.Textbox(label="Physical horizontal distance (µm)", placeholder="dkfz E041: 5885")
-        phys_h_um = gr.Textbox(label="Physical vertical distance (µm)", placeholder="dkfz E041: 5885")
+        phys_w_um = gr.Textbox(
+            label="Physical horizontal distance (µm) – auto-filled or enter manually",
+            placeholder="e.g. 5885 (DKFZ E041)")
+        phys_h_um = gr.Textbox(
+            label="Physical vertical distance (µm) – auto-filled or enter manually",
+            placeholder="e.g. 5885 (DKFZ E041)")
 
     spacing_used_md = gr.Markdown("**Spacing used:** not calculated yet. Click Run.")
 
@@ -1120,6 +1239,31 @@ with gr.Blocks() as demo:
         fn=process,
         inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_eye, chk_thr, thr_val, phys_w_um, phys_h_um],
         outputs=[out_file, out_box, gallery, filenames_list, data_state, spacing_used_md]
+    )
+
+    # --- Scale bar detection event wiring ---
+    _scalebar_outputs = [scalebar_preview, scalebar_status_md, phys_w_um, phys_h_um]
+    _scalebar_inputs  = [folder, files_state]
+
+    # Manual button
+    detect_scalebar_btn.click(
+        fn=_run_scalebar_detection,
+        inputs=_scalebar_inputs,
+        outputs=_scalebar_outputs,
+    )
+
+    # Auto-trigger when folder upload changes
+    folder.change(
+        fn=_run_scalebar_detection,
+        inputs=_scalebar_inputs,
+        outputs=_scalebar_outputs,
+    )
+
+    # Auto-trigger after individual file upload (chain after the state update)
+    _upload_event.then(
+        fn=_run_scalebar_detection,
+        inputs=_scalebar_inputs,
+        outputs=_scalebar_outputs,
     )
 
     # Gallery click handler - only prepares for manual editing
