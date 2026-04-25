@@ -1,69 +1,20 @@
 """
 Scale bar auto-detection for microscopy images.
 
-Finds the horizontal scale bar in the bottom portion of an image, reads its
-physical length label via OCR (pytesseract), and computes µm-per-pixel
-calibration.
-
-Optional dependency: pytesseract + Tesseract binary.
-Install with:
-    pip install pytesseract
-    # Then install the Tesseract binary for your OS:
-    # Windows: https://github.com/UB-Mannheim/tesseract/wiki
-    # Linux:   sudo apt install tesseract-ocr
-    # macOS:   brew install tesseract
+Finds the horizontal scale bar in the bottom portion of an image and returns
+its length in pixels.  The user supplies the corresponding physical length
+(µm), which is then used to compute the µm-per-pixel calibration.
 """
 
-import re
 from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
 
-try:
-    import pytesseract
-    _HAS_TESSERACT = True
-except ImportError:
-    _HAS_TESSERACT = False
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _parse_scale_label(text: str) -> Optional[float]:
-    """
-    Parse a scale-bar label string and return its value in micrometres (µm).
-
-    Handles common formats:
-        "500 µm", "500 um", "500um", "1 mm", "0.5mm", "200 nm", "50μm"
-
-    Returns float in µm, or None if the text cannot be parsed.
-    """
-    if not text:
-        return None
-
-    # Normalise various Unicode micro/mu variants to plain 'u'
-    text = (text
-            .replace('\u03bc', 'u')   # Greek small letter mu (μ)
-            .replace('\u00b5', 'u')   # Micro sign (µ)
-            .replace('μ', 'u')
-            .replace('µ', 'u'))
-
-    match = re.search(r'(\d+(?:[.,]\d+)?)\s*(nm|mm|cm|um)', text.lower())
-    if not match:
-        return None
-
-    val_str = match.group(1).replace(',', '.')
-    unit = match.group(2)
-    try:
-        val = float(val_str)
-    except ValueError:
-        return None
-
-    conversions = {'nm': 1e-3, 'um': 1.0, 'mm': 1e3, 'cm': 1e4}
-    return val * conversions[unit]
-
 
 def _find_scalebar_line(gray_crop: np.ndarray,
                         full_img_width: int) -> Optional[Dict]:
@@ -117,36 +68,40 @@ def _find_scalebar_line(gray_crop: np.ndarray,
 # Public API
 # ---------------------------------------------------------------------------
 
-def detect_scalebar(img: np.ndarray) -> Dict[str, Any]:
+def detect_scalebar(img: np.ndarray,
+                    label_um: Optional[float] = None) -> Dict[str, Any]:
     """
-    Detect a scale bar in a microscopy image and return calibration data.
+    Detect the scale bar line in a microscopy image.
 
     Parameters
     ----------
     img : np.ndarray
         H×W (greyscale) or H×W×C (RGB / RGBA) uint8 image.
+    label_um : float, optional
+        Physical length of the scale bar in µm as provided by the user.
+        When supplied, full calibration (µm/px, image physical size) is
+        computed.  When None, only the bar pixel length is returned and the
+        caller should ask the user for the physical value.
 
     Returns
     -------
     dict with keys:
-        success        – bool
-        scale_um_per_px – µm per pixel in the *original* image (float|None)
-        phys_width_um  – total physical image width in µm (float|None)
-        phys_height_um – total physical image height in µm (float|None)
-        bar_length_px  – detected bar width in pixels (int|None)
-        label_text     – raw OCR string (str|None)
-        label_um       – parsed physical length in µm (float|None)
-        debug_img      – RGB numpy array with detection overlay
-        message        – human-readable result description
+        success         – bool  (True only when bar found AND label_um given)
+        bar_found       – bool  (True when the bar line was detected)
+        scale_um_per_px – µm per pixel in the original image (float|None)
+        phys_width_um   – total physical image width in µm (float|None)
+        phys_height_um  – total physical image height in µm (float|None)
+        bar_length_px   – detected bar width in pixels (int|None)
+        debug_img       – RGB numpy array with detection overlay
+        message         – human-readable result description
     """
     result: Dict[str, Any] = {
         'success': False,
+        'bar_found': False,
         'scale_um_per_px': None,
         'phys_width_um': None,
         'phys_height_um': None,
         'bar_length_px': None,
-        'label_text': None,
-        'label_um': None,
         'debug_img': None,
         'message': '',
     }
@@ -169,18 +124,6 @@ def detect_scalebar(img: np.ndarray) -> Dict[str, Any]:
 
     result['debug_img'] = rgb.copy()
 
-    if not _HAS_TESSERACT:
-        result['message'] = (
-            'pytesseract is not installed – OCR-based scale-bar reading '
-            'is unavailable.\n'
-            'Install it with:  pip install pytesseract\n'
-            'Then install the Tesseract binary for your OS:\n'
-            '  Windows: https://github.com/UB-Mannheim/tesseract/wiki\n'
-            '  Linux:   sudo apt install tesseract-ocr\n'
-            '  macOS:   brew install tesseract'
-        )
-        return result
-
     h_full, w_full = rgb.shape[:2]
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
 
@@ -190,66 +133,21 @@ def detect_scalebar(img: np.ndarray) -> Dict[str, Any]:
 
     bar = _find_scalebar_line(gray_crop, w_full)
     if bar is None:
-        result['message'] = (
-            'No scale bar detected in the bottom portion of the image.')
+        result['message'] = 'No scale bar detected in the bottom portion of the image.'
         return result
 
     # Absolute coordinates in the full image
     ax, ay = bar['x'], crop_top + bar['y']
     aw, ah = bar['w'], bar['h']
     result['bar_length_px'] = aw
-
-    # --- OCR region: above and around the bar ---
-    ocr_t = max(0, ay - 70)
-    ocr_b = ay + ah + 8
-    ocr_l = max(0, ax - 30)
-    ocr_r = min(w_full, ax + aw + 30)
-    text_roi = gray[ocr_t:ocr_b, ocr_l:ocr_r]
-
-    label_um: Optional[float] = None
-    label_text: Optional[str] = None
-
-    if text_roi.size > 0:
-        # Upscale 3× for better Tesseract accuracy on small text
-        roi_up = cv2.resize(text_roi, None, fx=3, fy=3,
-                            interpolation=cv2.INTER_CUBIC)
-
-        for invert_ocr in (False, True):
-            src_ocr = (255 - roi_up) if invert_ocr else roi_up
-            _, bw_ocr = cv2.threshold(
-                src_ocr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-            for psm in (7, 11, 6):
-                cfg = (f'--oem 3 --psm {psm} '
-                       r'-c tessedit_char_whitelist=0123456789.,µμumMnNkK ')
-                try:
-                    raw = pytesseract.image_to_string(
-                        bw_ocr, config=cfg).strip()
-                except Exception:
-                    continue
-
-                parsed = _parse_scale_label(raw)
-                if parsed is not None:
-                    label_um = parsed
-                    label_text = raw
-                    break
-
-            if label_um is not None:
-                break
-
-    result['label_text'] = label_text
-    result['label_um'] = label_um
+    result['bar_found'] = True
 
     # --- Build debug overlay ---
     debug = rgb.copy()
-    # Green rectangle around detected bar
     cv2.rectangle(debug, (ax, ay - 2), (ax + aw, ay + ah + 2),
                   (0, 220, 0), 2)
-    # Orange rectangle around OCR region
-    cv2.rectangle(debug, (ocr_l, ocr_t), (ocr_r, ocr_b),
-                  (255, 165, 0), 1)
 
-    if label_um is not None:
+    if label_um is not None and label_um > 0:
         scale_um_per_px = label_um / aw
         result.update(
             success=True,
@@ -269,12 +167,12 @@ def detect_scalebar(img: np.ndarray) -> Dict[str, Any]:
                     cv2.LINE_AA)
     else:
         result['message'] = (
-            f'Scale bar line detected ({aw} px) but label could not be '
-            f'read via OCR.  Raw OCR text: "{label_text or "—"}"'
+            f'Scale bar detected: {aw} px.  '
+            f'Enter the physical length above and click "Apply" to calibrate.'
         )
-        cv2.putText(debug, f'bar = {aw} px (label unreadable)',
+        cv2.putText(debug, f'bar = {aw} px',
                     (ax, max(12, ay - 8)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 165, 0), 2,
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2,
                     cv2.LINE_AA)
 
     result['debug_img'] = debug

@@ -435,12 +435,12 @@ def _get_first_image_path(folder_input, files) -> Optional[str]:
     return None
 
 
-def _run_scalebar_detection(folder_input, files):
+def _run_scalebar_detection(folder_input, files, bar_label_um_str=""):
     """
-    Detect scale bar from the first uploaded image.
+    Detect the scale bar line from the first uploaded image and, if the user
+    has supplied the physical bar length, compute the full calibration.
 
-    Returns (preview_update, status_md, phys_w_update, phys_h_update)
-    where *_update values are gr.update() objects.
+    Returns (preview_update, status_md, bar_px_update, phys_w_update, phys_h_update)
     """
     no_img_update = gr.update(visible=False)
 
@@ -448,7 +448,7 @@ def _run_scalebar_detection(folder_input, files):
     if first_path is None:
         return (no_img_update,
                 "Upload images first, then click **Detect Scale Bar**.",
-                gr.update(), gr.update())
+                gr.update(), gr.update(), gr.update())
 
     # Load image
     try:
@@ -460,30 +460,44 @@ def _run_scalebar_detection(folder_input, files):
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     except Exception as e:
         return (no_img_update, f"⚠ Could not load image: {e}",
-                gr.update(), gr.update())
+                gr.update(), gr.update(), gr.update())
 
     if not _HAS_SCALEBAR:
         return (gr.update(value=img_rgb, visible=True),
                 "⚠ `scalebar` module could not be imported.",
-                gr.update(), gr.update())
+                gr.update(), gr.update(), gr.update())
 
-    result = _detect_scalebar(img_rgb)
+    label_um = _safe_float(bar_label_um_str, default=None)
+    result = _detect_scalebar(img_rgb, label_um=label_um)
     debug_img = result.get('debug_img') if result.get('debug_img') is not None else img_rgb
+
+    bar_px = result.get('bar_length_px')
+    bar_px_str = str(bar_px) if bar_px is not None else ""
 
     if result['success']:
         phys_w = f"{result['phys_width_um']:.1f}"
         phys_h = f"{result['phys_height_um']:.1f}"
-        status = f"✅ **Auto-detected:** {result['message']}"
+        status = f"✅ {result['message']}"
         return (gr.update(value=debug_img, visible=True),
                 status,
+                gr.update(value=bar_px_str),
                 gr.update(value=phys_w),
                 gr.update(value=phys_h))
+    elif result['bar_found']:
+        status = (
+            f"📏 Scale bar line detected: **{bar_px} px**.  "
+            f"Enter its physical length in the field below, then click **Apply**."
+        )
+        return (gr.update(value=debug_img, visible=True),
+                status,
+                gr.update(value=bar_px_str),
+                gr.update(), gr.update())
     else:
         status = f"⚠ **Detection failed:** {result['message']}"
         return (gr.update(value=debug_img, visible=True),
                 status,
-                gr.update(),
-                gr.update())
+                gr.update(value=""),
+                gr.update(), gr.update())
 
 
 def process(folder,
@@ -1150,22 +1164,32 @@ with gr.Blocks() as demo:
     edit_image_idx = gr.State(-1)
 
     # --- Scale bar auto-detection ---
-    with gr.Accordion("📏 Scale Bar Auto-Detection", open=True):
+    with gr.Accordion("📏 Scale Bar Calibration", open=True):
         gr.Markdown(
-            "Automatically reads the scale bar from the **first uploaded image** "
-            "to calibrate pixel → µm conversion. "
-            "Detected values are pre-filled in the distance fields below. "
-            "You can always edit them manually."
+            "Automatically detects the scale bar line in the **first uploaded image** "
+            "and shows how many pixels it spans.  "
+            "Enter the physical length printed above the bar (e.g. `500`) and its unit, "
+            "then click **Apply** to compute the µm/px calibration. "
+            "The image width/height fields below will be filled automatically. "
+            "You can also skip this and enter the distances manually."
         )
         with gr.Row():
             detect_scalebar_btn = gr.Button(
                 "🔍 Detect Scale Bar from First Image", variant="secondary")
         scalebar_preview = gr.Image(
-            label="First image – detected scale bar highlighted (green = bar, orange = OCR region)",
+            label="First image – detected scale bar highlighted in green",
             type="numpy", visible=False)
         scalebar_status_md = gr.Markdown(
-            "Upload images, then click **Detect Scale Bar** to auto-calibrate, "
-            "or enter physical distances manually below.")
+            "Upload images, then click **Detect Scale Bar**.")
+        with gr.Row():
+            bar_px_display = gr.Textbox(
+                label="Detected bar length (px) – read-only",
+                interactive=False, placeholder="—")
+            bar_label_um_input = gr.Textbox(
+                label="Physical length of scale bar (µm)",
+                placeholder="e.g. 500")
+        with gr.Row():
+            apply_scalebar_btn = gr.Button("Apply", variant="primary")
 
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
@@ -1242,27 +1266,35 @@ with gr.Blocks() as demo:
     )
 
     # --- Scale bar detection event wiring ---
-    _scalebar_outputs = [scalebar_preview, scalebar_status_md, phys_w_um, phys_h_um]
-    _scalebar_inputs  = [folder, files_state]
+    _scalebar_outputs = [scalebar_preview, scalebar_status_md, bar_px_display, phys_w_um, phys_h_um]
+    _scalebar_inputs_detect = [folder, files_state]          # no label yet on initial detect
+    _scalebar_inputs_apply  = [folder, files_state, bar_label_um_input]
 
-    # Manual button
+    # Detect button – find the bar, show px length (no label yet)
     detect_scalebar_btn.click(
         fn=_run_scalebar_detection,
-        inputs=_scalebar_inputs,
+        inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
     )
 
-    # Auto-trigger when folder upload changes
+    # Apply button – re-run detection with the user-supplied label
+    apply_scalebar_btn.click(
+        fn=_run_scalebar_detection,
+        inputs=_scalebar_inputs_apply,
+        outputs=_scalebar_outputs,
+    )
+
+    # Auto-trigger detect (no label) when folder upload changes
     folder.change(
         fn=_run_scalebar_detection,
-        inputs=_scalebar_inputs,
+        inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
     )
 
-    # Auto-trigger after individual file upload (chain after the state update)
+    # Auto-trigger detect after individual file upload (chain after state update)
     _upload_event.then(
         fn=_run_scalebar_detection,
-        inputs=_scalebar_inputs,
+        inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
     )
 
