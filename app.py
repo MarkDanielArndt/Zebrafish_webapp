@@ -468,7 +468,7 @@ def _run_scalebar_detection(folder_input, files):
                 gr.update(), gr.update())
 
     result = _detect_scalebar(img_rgb)
-    debug_img = result.get('debug_img') or img_rgb
+    debug_img = result.get('debug_img') if result.get('debug_img') is not None else img_rgb
 
     if result['success']:
         phys_w = f"{result['phys_width_um']:.1f}"
