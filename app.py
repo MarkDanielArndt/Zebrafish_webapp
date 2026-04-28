@@ -280,7 +280,9 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
                     np.clip(np.round(p[:, 1] * sx), 0, w_base - 1),
                     np.clip(np.round(p[:, 0] * sy), 0, h_base - 1),
                 ], axis=1).astype(np.int32)
-                cv2.polylines(overlay, [pts], isClosed=False, color=(0, 255, 255), thickness=2)
+                # dark outline for contrast, then bright cyan on top
+                cv2.polylines(overlay, [pts], isClosed=False, color=(0, 0, 0), thickness=6, lineType=cv2.LINE_AA)
+                cv2.polylines(overlay, [pts], isClosed=False, color=(0, 255, 255), thickness=3, lineType=cv2.LINE_AA)
         except Exception:
             pass
 
@@ -289,7 +291,9 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
             (r1, c1), (r2, c2) = straight_line_points
             p1 = (int(np.clip(round(c1 * sx), 0, w_base - 1)), int(np.clip(round(r1 * sy), 0, h_base - 1)))
             p2 = (int(np.clip(round(c2 * sx), 0, w_base - 1)), int(np.clip(round(r2 * sy), 0, h_base - 1)))
-            cv2.line(overlay, p1, p2, (255, 0, 255), 2)
+            # dark outline for contrast, then bright magenta on top
+            cv2.line(overlay, p1, p2, (0, 0, 0), 6, lineType=cv2.LINE_AA)
+            cv2.line(overlay, p1, p2, (255, 0, 255), 3, lineType=cv2.LINE_AA)
         except Exception:
             pass
 
