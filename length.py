@@ -1014,12 +1014,12 @@ class FishClassifier(nn.Module):
         x = self.fc2(x)
         return x
 
-def load_model(cnn_log_directory="Models/CNN", cnn_model_name="ResNet50x1/0006.keras", filename="best_model_class.pth"):
+def load_model(cnn_log_directory="Models/CNN", cnn_model_name="ResNet50x1/0006.keras"):
     
     _HF_TOKEN = os.getenv("HF_TOKEN", None)
     model_path = hf_hub_download(
         repo_id="markdanielarndt/Classification",
-        filename=filename,
+        filename="best_model_class.pth",
         token=_HF_TOKEN
     )
 

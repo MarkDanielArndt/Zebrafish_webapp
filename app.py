@@ -24,18 +24,19 @@ except Exception:
 
 MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
-# Registry of available classification models
-MODEL_OPTIONS = {
-    "General Model": "best_model_class.pth",
-    "Fine-tuned DESY": "fine_tuned_model_body_desy.pth",
+# Registry of available segmentation (body) models
+# Each entry: display name -> (hf_filename, encoder_name)
+SEG_MODEL_OPTIONS = {
+    "General Model": ("best_model_body_3400_vgg19.pth", "vgg19"),
+    "Fine-tuned DESY": ("fine_tuned_model_body_desy.pth", "vgg19"),
 }
 
-def _ensure_model(model_choice="General Model"):
+def _ensure_model():
     global MODEL_CACHE
-    filename = MODEL_OPTIONS.get(model_choice, "best_model_class.pth")
-    if filename not in MODEL_CACHE:
-        MODEL_CACHE[filename] = load_model(filename=filename)
-    return MODEL_CACHE[filename]
+    key = "classification"
+    if key not in MODEL_CACHE:
+        MODEL_CACHE[key] = load_model()
+    return MODEL_CACHE[key]
 
 def _to_numpy(img):
     if img is None:
@@ -509,7 +510,7 @@ def _run_scalebar_detection(folder_input, files, bar_label_um_str=""):
 
 def process(folder,
             files: Optional[List[gr.File]],
-            model_choice="General Model",
+            seg_model_choice="General Model",
             process_curvature=True,
             process_length=True,
             process_ratio=True,
@@ -519,9 +520,16 @@ def process(folder,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
+    # Resolve chosen segmentation model
+    seg_filename, seg_encoder = SEG_MODEL_OPTIONS.get(seg_model_choice, SEG_MODEL_OPTIONS["General Model"])
     # Always load eyes for overlay visualization
-    original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(work_dir, include_eyes=True)
-    model = _ensure_model(model_choice)
+    original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
+        work_dir,
+        include_eyes=True,
+        body_model_filename=seg_filename,
+        body_encoder_name=seg_encoder,
+    )
+    model = _ensure_model()
 
     # Parse physical distances (µm) for full image width/height from user
     phys_w_um_user = _safe_float(physical_horizontal_um_str, default=None)
@@ -1153,14 +1161,14 @@ with gr.Blocks() as demo:
 
     # --- Model selection ---
     with gr.Group():
-        gr.Markdown("### 🧠 Classification Model")
+        gr.Markdown("### 🔬 Segmentation Model")
         gr.Markdown(
-            "Select the curvature classification model to use. "
+            "Select the body segmentation model to use. "
             "The **General Model** is trained on a broad dataset. "
             "Fine-tuned models are optimised for specific imaging setups."
         )
         model_choice = gr.Radio(
-            choices=list(MODEL_OPTIONS.keys()),
+            choices=list(SEG_MODEL_OPTIONS.keys()),
             value="General Model",
             label="Model",
         )
