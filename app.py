@@ -22,13 +22,20 @@ try:
 except Exception:
     _HAS_SCALEBAR = False
 
-MODEL = None  # lazy-loaded
+MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
-def _ensure_model():
-    global MODEL
-    if MODEL is None:
-        MODEL = load_model()
-    return MODEL
+# Registry of available classification models
+MODEL_OPTIONS = {
+    "General Model": "best_model_class.pth",
+    "Fine-tuned DESY": "fine_tuned_model_body_desy.pth",
+}
+
+def _ensure_model(model_choice="General Model"):
+    global MODEL_CACHE
+    filename = MODEL_OPTIONS.get(model_choice, "best_model_class.pth")
+    if filename not in MODEL_CACHE:
+        MODEL_CACHE[filename] = load_model(filename=filename)
+    return MODEL_CACHE[filename]
 
 def _to_numpy(img):
     if img is None:
@@ -502,6 +509,7 @@ def _run_scalebar_detection(folder_input, files, bar_label_um_str=""):
 
 def process(folder,
             files: Optional[List[gr.File]],
+            model_choice="General Model",
             process_curvature=True,
             process_length=True,
             process_ratio=True,
@@ -513,7 +521,7 @@ def process(folder,
     work_dir, filenames = _stage_inputs(files, folder)
     # Always load eyes for overlay visualization
     original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(work_dir, include_eyes=True)
-    model = _ensure_model()
+    model = _ensure_model(model_choice)
 
     # Parse physical distances (µm) for full image width/height from user
     phys_w_um_user = _safe_float(physical_horizontal_um_str, default=None)
@@ -1142,6 +1150,21 @@ with gr.Blocks() as demo:
     If you use this tool in your research, please cite: *[Paper - soon to be published]*.
     """
     )
+
+    # --- Model selection ---
+    with gr.Group():
+        gr.Markdown("### 🧠 Classification Model")
+        gr.Markdown(
+            "Select the curvature classification model to use. "
+            "The **General Model** is trained on a broad dataset. "
+            "Fine-tuned models are optimised for specific imaging setups."
+        )
+        model_choice = gr.Radio(
+            choices=list(MODEL_OPTIONS.keys()),
+            value="General Model",
+            label="Model",
+        )
+
     # Left: folder upload + compact upload button
     with gr.Row():
         folder = gr.File(label="Upload a folder (preferred)", file_count="directory", type="filepath")
@@ -1261,7 +1284,7 @@ with gr.Blocks() as demo:
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
-        inputs=[folder, files_state, chk_curv, chk_len, chk_ratio, chk_eye, chk_thr, thr_val, phys_w_um, phys_h_um],
+        inputs=[folder, files_state, model_choice, chk_curv, chk_len, chk_ratio, chk_eye, chk_thr, thr_val, phys_w_um, phys_h_um],
         outputs=[out_file, out_box, gallery, filenames_list, data_state, spacing_used_md]
     )
 
