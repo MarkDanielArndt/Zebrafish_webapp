@@ -1319,7 +1319,7 @@ with gr.Blocks() as demo:
             bar_px_display = gr.Textbox(
                 label="Detected bar length (px) – read-only",
                 interactive=False, placeholder="—")
-            bar_label_um_input = gr.Textbox(
+            bar_label_um_auto = gr.Textbox(
                 label="Physical length of scale bar (µm)",
                 placeholder="e.g. 500")
         with gr.Row():
@@ -1328,20 +1328,22 @@ with gr.Blocks() as demo:
         # --- Manual scale bar entry ---
         with gr.Accordion("📐 Manual Scale Bar Entry (if auto-detection fails)", open=False):
             gr.Markdown(
-                "Click **Load Image** to display the first uploaded image below, then click "
-                "on the image to mark the **two endpoints** of the scale bar line:\n"
+                "The image loads automatically below. Click on it to mark the "
+                "**two endpoints** of the scale bar line:\n"
                 "- **1st click** → START (one end, shown in **green**)\n"
                 "- **2nd click** → END (other end, shown in **red**)\n\n"
-                "After both endpoints are set, enter the physical length in "
-                "**Physical length of scale bar (µm)** above and click **Apply Manual Points** "
-                "to fill in the calibration automatically."
+                "After both endpoints are set, enter the physical length below and click "
+                "**Apply Manual Points** to fill in the calibration automatically."
             )
-            manual_sb_status = gr.Markdown("Click **Load Image** to begin.")
+            manual_sb_status = gr.Markdown("Upload images to begin.")
             manual_sb_image = gr.Image(
                 label="Click to mark endpoints: START (green, 1st click) → END (red, 2nd click)",
                 type="numpy", interactive=False)
+            bar_label_um_input = gr.Textbox(
+                label="Physical length of scale bar (µm)",
+                placeholder="e.g. 500")
             with gr.Row():
-                load_sb_image_btn = gr.Button("Load Image", variant="secondary")
+                load_sb_image_btn = gr.Button("Reload Image", variant="secondary")
                 reset_sb_points_btn = gr.Button("Reset Points", variant="secondary")
                 apply_sb_points_btn = gr.Button("Apply Manual Points", variant="primary")
 
@@ -1422,13 +1424,17 @@ with gr.Blocks() as demo:
     # --- Scale bar detection event wiring ---
     _scalebar_outputs = [scalebar_preview, scalebar_status_md, bar_px_display, phys_w_um, phys_h_um]
     _scalebar_inputs_detect = [folder, files_state]          # no label yet on initial detect
-    _scalebar_inputs_apply  = [folder, files_state, bar_label_um_input]
+    _scalebar_inputs_apply  = [folder, files_state, bar_label_um_auto]
 
     # Detect button – find the bar, show px length (no label yet)
     detect_scalebar_btn.click(
         fn=_run_scalebar_detection,
         inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
+    ).then(
+        fn=_load_manual_scalebar_image,
+        inputs=[folder, files_state],
+        outputs=[manual_sb_image, manual_scalebar_points, manual_sb_status],
     )
 
     # Apply button – re-run detection with the user-supplied label
@@ -1436,6 +1442,10 @@ with gr.Blocks() as demo:
         fn=_run_scalebar_detection,
         inputs=_scalebar_inputs_apply,
         outputs=_scalebar_outputs,
+    ).then(
+        fn=_load_manual_scalebar_image,
+        inputs=[folder, files_state],
+        outputs=[manual_sb_image, manual_scalebar_points, manual_sb_status],
     )
 
     # Auto-trigger detect (no label) when folder upload changes
@@ -1443,6 +1453,10 @@ with gr.Blocks() as demo:
         fn=_run_scalebar_detection,
         inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
+    ).then(
+        fn=_load_manual_scalebar_image,
+        inputs=[folder, files_state],
+        outputs=[manual_sb_image, manual_scalebar_points, manual_sb_status],
     )
 
     # Auto-trigger detect after individual file upload (chain after state update)
@@ -1450,6 +1464,10 @@ with gr.Blocks() as demo:
         fn=_run_scalebar_detection,
         inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
+    ).then(
+        fn=_load_manual_scalebar_image,
+        inputs=[folder, files_state],
+        outputs=[manual_sb_image, manual_scalebar_points, manual_sb_status],
     )
 
     # --- Manual scale bar event wiring ---

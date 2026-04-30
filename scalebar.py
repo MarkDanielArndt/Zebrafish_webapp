@@ -45,8 +45,8 @@ def _find_scalebar_line(gray_crop: np.ndarray,
             kernel = cv2.getStructuringElement(
                 cv2.MORPH_RECT, (min_bar_len, 1))
             hlines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
-            # Small dilation to bridge minor gaps in the bar
-            hlines = cv2.dilate(hlines, np.ones((2, 5), np.uint8))
+            # Small vertical dilation to bridge minor row-gaps without widening the bar
+            hlines = cv2.dilate(hlines, np.ones((3, 1), np.uint8))
 
             for cnt in cv2.findContours(
                     hlines, cv2.RETR_EXTERNAL,
