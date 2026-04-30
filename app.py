@@ -17,7 +17,9 @@ except Exception:
     _HAS_TORCH = False
 
 try:
-    from scalebar import detect_scalebar as _detect_scalebar
+    from scalebar import (detect_scalebar as _detect_scalebar,
+                          draw_scalebar_endpoints as _draw_scalebar_endpoints,
+                          calibrate_from_endpoints as _calibrate_from_endpoints)
     _HAS_SCALEBAR = True
 except Exception:
     _HAS_SCALEBAR = False
@@ -510,6 +512,102 @@ def _run_scalebar_detection(folder_input, files, bar_label_um_str=""):
                 status,
                 gr.update(value=""),
                 gr.update(), gr.update())
+
+
+def _load_manual_scalebar_image(folder_input, files):
+    """Load the first uploaded image for manual scale bar endpoint selection."""
+    first_path = _get_first_image_path(folder_input, files)
+    if first_path is None:
+        return None, [], "Upload images first."
+    try:
+        img_bgr = cv2.imread(first_path, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            pil = PILImage.open(first_path).convert('RGB')
+            img_rgb = np.array(pil)
+        else:
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    except Exception as e:
+        return None, [], f"Could not load image: {e}"
+    return img_rgb, [], "Click to set **START** point (one end of scale bar)."
+
+
+def _record_scalebar_click(evt: gr.SelectData, current_img, sb_points):
+    """Record a click for manual scale bar endpoint selection."""
+    if current_img is None:
+        return sb_points, current_img, "Click **Load Image** first."
+    if not (hasattr(evt, 'index') and evt.index is not None):
+        return sb_points, current_img, "No click coordinates received."
+    if isinstance(evt.index, (list, tuple)) and len(evt.index) >= 2:
+        click_x, click_y = int(evt.index[0]), int(evt.index[1])
+    else:
+        return sb_points, current_img, "Invalid click coordinates."
+    if sb_points is None:
+        sb_points = []
+    sb_points = list(sb_points)
+    if len(sb_points) >= 2:
+        return sb_points, current_img, "⚠ Both endpoints already set. Click **Reset Points** to start over."
+    sb_points.append((click_x, click_y))
+    img_with_points = _draw_scalebar_endpoints(current_img, sb_points) if _HAS_SCALEBAR else np.array(current_img).copy()
+    if len(sb_points) == 2:
+        cal = _calibrate_from_endpoints(sb_points[0], sb_points[1], np.array(current_img).shape) if _HAS_SCALEBAR else {}
+        dist_px = cal.get('bar_length_px', 0.0) or 0.0
+        status = (
+            f"✓ Both endpoints set ({dist_px:.1f} px apart). "
+            "Enter the physical length in **Physical length of scale bar (µm)** above, "
+            "then click **Apply Manual Points**."
+        )
+    else:
+        status = "✓ START point set (green). Now click the other end of the scale bar (END, red)."
+    return sb_points, img_with_points, status
+
+
+def _reset_scalebar_points(folder_input, files):
+    """Reset manual scale bar points and reload the original image."""
+    first_path = _get_first_image_path(folder_input, files)
+    if first_path is None:
+        return [], None, "Upload images first."
+    try:
+        img_bgr = cv2.imread(first_path, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            pil = PILImage.open(first_path).convert('RGB')
+            img_rgb = np.array(pil)
+        else:
+            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    except Exception as e:
+        return [], None, f"Could not reload image: {e}"
+    return [], img_rgb, "Points reset. Click to set START point."
+
+
+def _apply_scalebar_points(sb_points, bar_label_um_str, folder_input, files):
+    """Compute µm/px calibration from two manually placed scale bar endpoints."""
+    if sb_points is None or len(sb_points) != 2:
+        return gr.update(), "⚠ Need exactly 2 points. Click on the image to set START and END.", gr.update(), gr.update()
+    # Retrieve image shape for physical size computation
+    img_shape = (0, 0)
+    first_path = _get_first_image_path(folder_input, files)
+    if first_path:
+        try:
+            img_bgr = cv2.imread(first_path, cv2.IMREAD_COLOR)
+            if img_bgr is not None:
+                img_shape = img_bgr.shape[:2]
+            else:
+                pil = PILImage.open(first_path)
+                img_shape = (pil.size[1], pil.size[0])
+        except Exception:
+            pass
+    label_um = _safe_float(bar_label_um_str, default=None)
+    if not _HAS_SCALEBAR:
+        return gr.update(), "⚠ scalebar module unavailable.", gr.update(), gr.update()
+    result = _calibrate_from_endpoints(sb_points[0], sb_points[1], img_shape, label_um=label_um)
+    bar_px_str = f"{result['bar_length_px']:.1f}" if result.get('bar_length_px') is not None else ""
+    if not result['bar_found']:
+        return gr.update(), f"⚠ {result['message']}", gr.update(), gr.update()
+    if result['success']:
+        phys_w = f"{result['phys_width_um']:.1f}"
+        phys_h = f"{result['phys_height_um']:.1f}"
+        return gr.update(value=bar_px_str), f"✅ {result['message']}", gr.update(value=phys_w), gr.update(value=phys_h)
+    else:
+        return gr.update(value=bar_px_str), f"📏 {result['message']}", gr.update(), gr.update()
 
 
 def process(folder,
@@ -1197,6 +1295,7 @@ with gr.Blocks() as demo:
     data_state = gr.State(None)
     manual_points_temp = gr.State({})
     edit_image_idx = gr.State(-1)
+    manual_scalebar_points = gr.State([])
 
     # --- Scale bar auto-detection ---
     with gr.Accordion("📏 Scale Bar Calibration", open=True):
@@ -1225,6 +1324,26 @@ with gr.Blocks() as demo:
                 placeholder="e.g. 500")
         with gr.Row():
             apply_scalebar_btn = gr.Button("Apply", variant="primary")
+
+        # --- Manual scale bar entry ---
+        with gr.Accordion("📐 Manual Scale Bar Entry (if auto-detection fails)", open=False):
+            gr.Markdown(
+                "Click **Load Image** to display the first uploaded image below, then click "
+                "on the image to mark the **two endpoints** of the scale bar line:\n"
+                "- **1st click** → START (one end, shown in **green**)\n"
+                "- **2nd click** → END (other end, shown in **red**)\n\n"
+                "After both endpoints are set, enter the physical length in "
+                "**Physical length of scale bar (µm)** above and click **Apply Manual Points** "
+                "to fill in the calibration automatically."
+            )
+            manual_sb_status = gr.Markdown("Click **Load Image** to begin.")
+            manual_sb_image = gr.Image(
+                label="Click to mark endpoints: START (green, 1st click) → END (red, 2nd click)",
+                type="numpy", interactive=False)
+            with gr.Row():
+                load_sb_image_btn = gr.Button("Load Image", variant="secondary")
+                reset_sb_points_btn = gr.Button("Reset Points", variant="secondary")
+                apply_sb_points_btn = gr.Button("Apply Manual Points", variant="primary")
 
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
@@ -1331,6 +1450,31 @@ with gr.Blocks() as demo:
         fn=_run_scalebar_detection,
         inputs=_scalebar_inputs_detect,
         outputs=_scalebar_outputs,
+    )
+
+    # --- Manual scale bar event wiring ---
+    load_sb_image_btn.click(
+        fn=_load_manual_scalebar_image,
+        inputs=[folder, files_state],
+        outputs=[manual_sb_image, manual_scalebar_points, manual_sb_status],
+    )
+
+    manual_sb_image.select(
+        fn=_record_scalebar_click,
+        inputs=[manual_sb_image, manual_scalebar_points],
+        outputs=[manual_scalebar_points, manual_sb_image, manual_sb_status],
+    )
+
+    reset_sb_points_btn.click(
+        fn=_reset_scalebar_points,
+        inputs=[folder, files_state],
+        outputs=[manual_scalebar_points, manual_sb_image, manual_sb_status],
+    )
+
+    apply_sb_points_btn.click(
+        fn=_apply_scalebar_points,
+        inputs=[manual_scalebar_points, bar_label_um_input, folder, files_state],
+        outputs=[bar_px_display, scalebar_status_md, phys_w_um, phys_h_um],
     )
 
     # Gallery click handler - only prepares for manual editing

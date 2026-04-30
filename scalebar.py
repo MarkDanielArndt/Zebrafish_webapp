@@ -6,7 +6,7 @@ its length in pixels.  The user supplies the corresponding physical length
 (µm), which is then used to compute the µm-per-pixel calibration.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -176,4 +176,127 @@ def detect_scalebar(img: np.ndarray,
                     cv2.LINE_AA)
 
     result['debug_img'] = debug
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Manual / interactive calibration helpers
+# ---------------------------------------------------------------------------
+
+def draw_scalebar_endpoints(
+        img: np.ndarray,
+        points: List[Tuple[int, int]],
+        label_um: Optional[float] = None) -> np.ndarray:
+    """
+    Draw the manually placed scale bar endpoints (and their connecting line)
+    on top of *img*.
+
+    Parameters
+    ----------
+    img : np.ndarray
+        RGB uint8 image to annotate (not modified in place).
+    points : list of (x, y) tuples
+        Up to two pixel coordinates: first = START, second = END.
+    label_um : float, optional
+        Physical length in µm; shown as a text label when both points are set.
+
+    Returns
+    -------
+    np.ndarray
+        Annotated RGB copy of the input image.
+    """
+    out = np.array(img).copy()
+    colors = [(0, 255, 0), (255, 0, 0)]   # green = START, red = END
+    labels = ['START', 'END']
+
+    for i, (px, py) in enumerate(points[:2]):
+        color = colors[i]
+        cv2.circle(out, (int(px), int(py)), 8, color, -1)
+        cv2.circle(out, (int(px), int(py)), 10, (255, 255, 255), 2)
+        cv2.putText(out, labels[i], (int(px) + 15, int(py) - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2,
+                    cv2.LINE_AA)
+
+    if len(points) >= 2:
+        p1 = (int(points[0][0]), int(points[0][1]))
+        p2 = (int(points[1][0]), int(points[1][1]))
+        cv2.line(out, p1, p2, (0, 0, 0), 4, lineType=cv2.LINE_AA)
+        cv2.line(out, p1, p2, (0, 220, 255), 2, lineType=cv2.LINE_AA)
+        dist_px = float(np.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2))
+        if label_um is not None and label_um > 0:
+            text = f'{label_um:.0f} µm / {dist_px:.1f} px'
+        else:
+            text = f'{dist_px:.1f} px'
+        mid_x = (p1[0] + p2[0]) // 2
+        mid_y = (p1[1] + p2[1]) // 2 - 12
+        cv2.putText(out, text, (mid_x, max(12, mid_y)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2,
+                    cv2.LINE_AA)
+
+    return out
+
+
+def calibrate_from_endpoints(
+        pt1: Tuple[int, int],
+        pt2: Tuple[int, int],
+        img_shape: Tuple[int, int],
+        label_um: Optional[float] = None) -> Dict[str, Any]:
+    """
+    Compute µm/px calibration from two manually placed scale bar endpoints.
+
+    Parameters
+    ----------
+    pt1, pt2 : (x, y) pixel coordinates of the two scale bar endpoints.
+    img_shape : (height, width) of the full image in pixels.
+    label_um : float, optional
+        Physical length of the scale bar in µm.  When given, full calibration
+        is returned; otherwise only the pixel distance is reported.
+
+    Returns
+    -------
+    dict with the same keys as :func:`detect_scalebar`:
+        success, bar_found, scale_um_per_px, phys_width_um, phys_height_um,
+        bar_length_px (as float here), debug_img (None), message.
+    """
+    result: Dict[str, Any] = {
+        'success': False,
+        'bar_found': True,
+        'scale_um_per_px': None,
+        'phys_width_um': None,
+        'phys_height_um': None,
+        'bar_length_px': None,
+        'debug_img': None,
+        'message': '',
+    }
+
+    h_full, w_full = img_shape[:2]
+    dist_px = float(np.sqrt((pt2[0] - pt1[0]) ** 2 + (pt2[1] - pt1[1]) ** 2))
+
+    if dist_px < 1:
+        result['bar_found'] = False
+        result['message'] = 'Endpoints are too close together.'
+        return result
+
+    result['bar_length_px'] = dist_px
+
+    if label_um is not None and label_um > 0:
+        scale_um_per_px = label_um / dist_px
+        result.update(
+            success=True,
+            scale_um_per_px=scale_um_per_px,
+            phys_width_um=scale_um_per_px * w_full,
+            phys_height_um=scale_um_per_px * h_full,
+            message=(
+                f'Manual scale bar: {dist_px:.1f} px = {label_um:.1f} µm  →  '
+                f'{scale_um_per_px:.4f} µm/px  |  '
+                f'Image: {scale_um_per_px * w_full:.1f} × '
+                f'{scale_um_per_px * h_full:.1f} µm'
+            ),
+        )
+    else:
+        result['message'] = (
+            f'Manual scale bar: {dist_px:.1f} px.  '
+            'Enter the physical length and click "Apply Manual Points" to calibrate.'
+        )
+
     return result
