@@ -745,19 +745,6 @@ def process(folder,
 
     boxplot_png = _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas, eye_diameters)
     boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
-    out_bytes = write_lengths_to_excel_bytes(
-        filenames,
-        fish_lengths,
-        curvatures,
-        ratios,
-        eye_areas,
-        eye_diameters,
-        use_threshold,
-        threshold_value,
-        boxplot_png,
-    )
-    tmpout = tempfile.mkdtemp(); out_xlsx = os.path.join(tmpout, "fish_data.xlsx")
-    with open(out_xlsx, "wb") as f: f.write(out_bytes.getvalue())
     # Prepare state for interactive filtering
     # Keep a copy of the original previews so crosses can be added/removed reversibly
     original_previews = []
@@ -789,7 +776,7 @@ def process(folder,
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
     
-    return out_xlsx, boxplot_np, previews, filenames_md, data_state, spacing_info_md
+    return boxplot_np, previews, filenames_md, data_state, spacing_info_md
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -1261,6 +1248,7 @@ with gr.Blocks() as demo:
     """
     )
 
+    gr.Markdown("## 1. Choose Model")
     # --- Model selection ---
     with gr.Group():
         gr.Markdown("### 🔬 Segmentation Model")
@@ -1275,9 +1263,10 @@ with gr.Blocks() as demo:
             label="Model",
         )
 
+    gr.Markdown("## 2. Upload Images")
     # Left: folder upload + compact upload button
     with gr.Row():
-        folder = gr.File(label="Upload a folder (preferred)", file_count="directory", type="filepath")
+        folder = gr.File(label="Upload a folder", file_count="directory", type="filepath")
         with gr.Column(scale=1):
             upload_btn = gr.UploadButton("Upload individual images", file_types=["image"], file_count="multiple")
             files_summary = gr.Markdown("No files uploaded yet.")
@@ -1297,12 +1286,13 @@ with gr.Blocks() as demo:
     edit_image_idx = gr.State(-1)
     manual_scalebar_points = gr.State([])
 
+    gr.Markdown("## 3. Calibrate Scale Bar")
     # --- Scale bar auto-detection ---
     with gr.Accordion("📏 Scale Bar Calibration", open=True):
         gr.Markdown(
             "Automatically detects the scale bar line in the **first uploaded image** "
             "and shows how many pixels it spans.  "
-            "Enter the physical length printed above the bar (e.g. `500`) and its unit, "
+            "Enter only the number printed above the bar (e.g. `500`). The unit is µm. "
             "then click **Apply** to compute the µm/px calibration. "
             "The image width/height fields below will be filled automatically. "
             "You can also skip this and enter the distances manually."
@@ -1347,6 +1337,7 @@ with gr.Blocks() as demo:
                 reset_sb_points_btn = gr.Button("Reset Points", variant="secondary")
                 apply_sb_points_btn = gr.Button("Apply Manual Points", variant="primary")
 
+    gr.Markdown("## 4. Select Analyses")
     with gr.Row():
         chk_curv = gr.Checkbox(value=True, label="Process Curvature")
         chk_len  = gr.Checkbox(value=True, label="Process Length")
@@ -1366,11 +1357,10 @@ with gr.Blocks() as demo:
 
     spacing_used_md = gr.Markdown("**Spacing used:** not calculated yet. Click Run.")
 
+    gr.Markdown("## 5. Run")
     run = gr.Button("Run")
 
-    with gr.Row():
-        out_file = gr.File(label="Download results (.xlsx)")
-
+    gr.Markdown("## 6. Review, Edit, and Export Final Excel")
     with gr.Accordion("Results previews", open=True):
         with gr.Row():
             out_box = gr.Image(label="Box plots", type="numpy")
@@ -1401,24 +1391,24 @@ with gr.Blocks() as demo:
         
         filenames_list = gr.Markdown("")
         
-        with gr.Accordion("📄 Corrected Excel Export", open=False):
+        with gr.Accordion("📄 Final Excel Export", open=True):
             gr.Markdown("""
-            Create a fresh Excel export from the current results in memory.
+            Create a single final Excel export from the current results in memory.
 
             If you adjusted manual points, this export will include the updated length and ratio values.
             """)
 
             with gr.Row():
-                gen_corrected_btn = gr.Button("Generate Corrected Excel", variant="primary")
+                gen_corrected_btn = gr.Button("Generate Final Excel", variant="primary")
 
             with gr.Row():
-                out_file_corrected = gr.File(label="Download corrected results (.xlsx)")
+                out_file_corrected = gr.File(label="Download final results (.xlsx)")
 
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
         inputs=[folder, files_state, model_choice, chk_curv, chk_len, chk_ratio, chk_eye, chk_thr, thr_val, phys_w_um, phys_h_um],
-        outputs=[out_file, out_box, gallery, filenames_list, data_state, spacing_used_md]
+        outputs=[out_box, gallery, filenames_list, data_state, spacing_used_md]
     )
 
     # --- Scale bar detection event wiring ---
