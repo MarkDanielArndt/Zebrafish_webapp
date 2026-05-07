@@ -44,13 +44,12 @@ def segment_fish(image, model, biggest_only=True):
         # Get predictions from the model
         prediction = model(image_tensor)
     
-    # Get the mask
-    mask = prediction.squeeze().cpu().numpy()
-    # Convert the mask to a confidence map
-    confidence_map = (mask - mask.min()) / (mask.max() - mask.min()) * 255
-    confidence_map = confidence_map.astype(np.uint8)
-    
-    # Convert the confidence map to a binary mask
+    # Get the mask — apply sigmoid to convert raw logits to probabilities [0, 1]
+    mask = torch.sigmoid(prediction).squeeze().cpu().numpy()
+    # Convert the probability map to a confidence map [0, 255]
+    confidence_map = (mask * 255).astype(np.uint8)
+
+    # Convert the confidence map to a binary mask (threshold at 0.5 probability)
     binary_mask = (confidence_map > 127).astype(np.uint8) * 255
     
     # Convert the binary mask to a PIL image
@@ -58,14 +57,19 @@ def segment_fish(image, model, biggest_only=True):
         # Find the largest connected component in the binary mask
         num_labels, labels_im = cv2.connectedComponents(binary_mask)
 
-        # Find the largest component
-        largest_component = 1 + np.argmax(np.bincount(labels_im.flat)[1:])
+        counts = np.bincount(labels_im.flat)[1:]  # exclude background
+        if len(counts) == 0:
+            # No foreground components — return empty mask
+            segmented_image = Image.fromarray(np.zeros_like(binary_mask))
+        else:
+            # Find the largest component
+            largest_component = 1 + np.argmax(counts)
 
-        # Create a mask for the largest component
-        largest_component_mask = (labels_im == largest_component).astype(np.uint8) * 255
+            # Create a mask for the largest component
+            largest_component_mask = (labels_im == largest_component).astype(np.uint8) * 255
 
-        # Convert the largest component mask to a PIL image
-        segmented_image = Image.fromarray(largest_component_mask)
+            # Convert the largest component mask to a PIL image
+            segmented_image = Image.fromarray(largest_component_mask)
     else:
         # Keep all components
         segmented_image = Image.fromarray(binary_mask)
