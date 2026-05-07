@@ -13,13 +13,24 @@ pinned: false
 
 ## Table of Contents
 - [How to use the Zebrafish Segmentation Web App](#How-to-use-the-Zebrafish-Segmentation-Web-App)
+  - [Selecting a Model](#selecting-a-model)
   - [Uploading Images](#uploading-images)
     - [Method 1: Upload a Folder (Preferred)](#method-1-upload-a-folder-preferred)
     - [Method 2: Upload Individual Images](#method-2-upload-individual-images)
+  - [Scale Bar Calibration](#scale-bar-calibration) 
   - [Selecting Endpoints](#selecting-endpoints)
-  - [Results and Downloads](#results-and-downloads)
+  - [Run](#run)
+  - [Boxplots](#boxplots)
+  - [Segmentation Preview](#segmentation-preview)
+  - [Generating a Final Excel](#generating-a-final-excel)
 
 ## How to use the Zebrafish Segmentation Web App
+
+### Selecting a Model
+
+Before you begin, you can select the model that will analyze the images. The General Model is trained on a broad dataset. Fine-tuned models are optimized for specific imaging setups.
+
+![Model selection option](Documentation_images/screenshot01.png)
 
 ### Uploading Images
 
@@ -57,11 +68,33 @@ Wait for the images to load and appear:
 
 ![Images loaded](Documentation_images/screenshot7.png)
 
+### Scale Bar Calibration
+
+Once the images are successfully uploaded, the first one will appear on the screen. The scale bar will be automatically detected and the number of pixels it spans will be displayed. 
+
+![Scale Bar Automatic Detection](Documentation_images/screenshot_auto_scale_detection.png)
+
+Enter the physical length printed above the bar (e.g. 500) and its unit, then click Apply to compute the µm/px calibration. The image width/height fields below will be filled automatically.
+
+![Length Values](Documentation_images/screenshot_length_values.png)
+
+If automatic detection has incorrectly identified the scale bar, you can use the Manual Scale Bar Entry option below. The image loads automatically below. Click on it to mark the two endpoints of the scale bar line:
+- 1st click → START (one end, shown in green)
+- 2nd click → END (other end, shown in red)
+
+![Manual Scale Bar Entry](Documentation_images/screenshot_manual_scalebar_entry.png)
+
+After both endpoints are set, enter the physical length below and click Apply Manual Points to fill in the calibration automatically.
+
+![Apply Manual Points](Documentation_images/screenshot_aply_manual_points.png)
+
+You can also skip this step and enter the distances manually.
+
 ### Selecting Endpoints
 
 After uploading your images, choose which endpoints you want to analyze:
 
-![Select endpoints](Documentation_images/screenshot8.png)
+![Select endpoints](Documentation_images/screenshot_endpoint_selector.png)
 
 You can select:
 - **Length**: Measure the length of the zebrafish (centerline path length in µm)
@@ -71,31 +104,26 @@ You can select:
   - Class 3: Mild curvature
   - Class 4: Most healthy (minimal curvature)
 - **Length/Straight Line Ratio**: The ratio between the actual centerline length and the straight-line distance between endpoints. A value close to 1.0 indicates a nearly straight fish, while higher values indicate more curvature. This metric quantifies body curvature independently of fish size.
+- **Eye Size**: Calculates the eye area in µm² and measures the eye diameter in µm. 
 
-You can also choose whether to enable **Threshold/Human-in-the-Loop mode** and set a threshold value. This mode allows for manual review of uncertain predictions (more details below).
+### Run
 
-**Threshold / Human-in-the-Loop (Curvature only)**
+To start the processing, click the **Run** button.
 
-If you activate threshold mode you may set a confidence threshold between 0.0 and 1.0. The curvature classifier provides an inherent confidence score for its predicted curvature label; if the model's confidence for an image does not exceed the chosen threshold, that image will not be assigned a curvature class and will instead be reported as "Not Classified" in the Excel output. This thresholding applies only to curvature classification, length measurements are not affected.
+![Run](Documentation_images/screenshot_run.png)
 
-Example: see ![Documentation_images/screenshot12.png](Documentation_images/screenshot12.png). The left side shows the Excel output with threshold mode disabled (all images receive a curvature class). The right side shows threshold mode enabled with a threshold of 0.95: several images have confidence below 0.95 and are therefore marked "Not Classified", allowing those cases to be routed for manual review.
+### Boxplots
 
-Use a higher threshold to reduce automatic curvature assignments and increase human review of uncertain cases; choose a lower threshold to classify more images automatically.
+After processing, you'll see boxplots visualizing the distribution of the selected endpoints. These boxplots are also included in the Excel file:
 
-### Results and Downloads
-
-After processing, you can download an Excel sheet containing individual fish annotations:
-
-![Download Excel](Documentation_images/screenshot9.png)
-
-Below the download button, you'll see boxplots visualizing the distribution of the selected endpoints. These boxplots are also included in the Excel file:
-
-![Boxplots](Documentation_images/screenshot_boxplots.png)
+![Boxplots](Documentation_images/screenshot_boxplots_new.png)
 
 The boxplots display:
 - **Fish Lengths**: Distribution of measured centerline lengths in µm
 - **Curvatures**: Distribution of curvature classifications (1-4)
 - **Length/Straight Line Ratio**: Distribution of the length ratio metric, where values closer to 1.0 indicate straighter fish
+- **Eye Area**: Distribution of calculated eye areas in µm²
+- **Eye Diameter**: Distribution of measured eye diameters in µm
 
 The ratio visualization helps identify fish with significant body curvature. You can see in the example image that some fish have ratios above 1.0, indicating curved body shapes:
 
@@ -103,29 +131,26 @@ The ratio visualization helps identify fish with significant body curvature. You
 
 The cyan line shows the straight-line distance between endpoints, while the actual centerline path (shown in red) is longer due to body curvature. The ratio quantifies this difference.
 
-#### Segmentation Preview
+### Segmentation Preview
 
-A gallery displays segmentation overlays for the uploaded images (thumbnails include a short filename label). You can interact with the gallery to mark images for exclusion before exporting a filtered results file — see the next section for details.
+A gallery displays segmentation overlays for the uploaded images (thumbnails include a short filename label). 
 
-**Important:** Verify that the segmentations accurately match the fish. If the segmentations are incorrect or misaligned, the resulting endpoint measurements will be inaccurate. If you notice issues with the segmentations, you may need to adjust your images or use the threshold mode for manual review.
+![Segmentation preview](Documentation_images/screenshot_segmentation_preview.png)
 
-### Excluding segmentations & generating a filtered Excel
+If automatic detection fails use Manual Point Adjustment tool to manually set head and tail points. 
 
-After the run you can exclude individual segmentation results and create a new Excel that omits those excluded images (the original Excel download remains unchanged).
+- Click an image in the gallery above to select it for manual editing
+- Click on the large image below to set HEAD (green) and TAIL (red) points
+- Click 'Apply Manual Points' to recalculate the length
 
-- Click an image in the "Segmentations" gallery to toggle exclusion; excluded images are crossed out and annotated "(excluded)". As an alternative, use the checkbox row under the gallery to select images to exclude (labels are formatted `index:filename`).
-- When you're ready, press the **Generate Filtered Excel** button (below the gallery). A separate download link `Download filtered results (.xlsx)` will appear containing only the non-excluded images.
+![Manual points](Documentation_images/screenshot_manual_point.png)
 
-See the UI examples:
+### Generating a Final Excel
 
-![Gallery with crossed exclusion](Documentation_images/screenshot14.png)
+When you're ready, press the **Generate Final Excel** button. 
 
-The checkboxes under the gallery (or the gallery-click) let you mark images to exclude:
+![Generate Final Excel](Documentation_images/screenshot_generate_excel.png)
 
-![Exclude with checkboxes](Documentation_images/screenshot15.png)
+Below will be a button to download the file.
 
-After generating, the filtered Excel file appears as a separate download and does not modify the original results file:
-
-![Filtered file download](Documentation_images/screenshot16.png)
-
-Use this workflow to remove bad segmentations or obvious outliers before downstream analysis.
+![Download Final Excel](Documentation_images/screenshot_download_excel.png)
