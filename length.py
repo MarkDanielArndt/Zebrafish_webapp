@@ -856,6 +856,10 @@ def get_fish_length_circles(body_mask):
     eroded = binary_erosion(body_mask_bin)
     border_mask = body_mask_bin ^ eroded
     body_border = np.column_stack(np.where(border_mask))
+
+    if len(body_border) == 0:
+        return 0.0
+
     # Find the two border points that are farthest apart
     if len(body_border) > 1:
         dists = cdist(body_border, body_border)
@@ -962,6 +966,10 @@ def classification_curvature(image, mask, model, use_threshold, threshold):
     masked_image = apply_mask(image, mask)
 
     cropped_image = preprocess_masked_image(masked_image)
+
+    if cropped_image is None:
+        # Fully-black masked image (empty segmentation) — return uncertain curvature
+        return None, torch.tensor([5]).to(device)
 
     # Ensure the masked image is in RGB format
     masked_image_rgb = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB)

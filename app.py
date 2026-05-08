@@ -26,11 +26,12 @@ except Exception:
 
 MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
-# Registry of available segmentation (body) models
-# Each entry: display name -> (hf_filename, encoder_name)
+# Registry of available segmentation models
+# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename)
+# eye_hf_filename=None means use the default eye model
 SEG_MODEL_OPTIONS = {
-    "General Model": ("best_model_body_3400_vgg19.pth", "vgg19"),
-    "Fine-tuned DESY": ("fine_tuned_model_body_desy.pth", "vgg19"),
+    "General Model": ("best_model_body_3400_vgg19.pth", "vgg19", None),
+    "Fine-tuned DESY": ("best_model_body_finetuned.pth", "vgg19", "best_model_eye_finetuned.pth"),
 }
 
 def _ensure_model():
@@ -623,13 +624,16 @@ def process(folder,
             physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
     # Resolve chosen segmentation model
-    seg_filename, seg_encoder = SEG_MODEL_OPTIONS.get(seg_model_choice, SEG_MODEL_OPTIONS["General Model"])
+    seg_filename, seg_encoder, eye_filename = SEG_MODEL_OPTIONS.get(seg_model_choice, SEG_MODEL_OPTIONS["General Model"])
+    # Build kwargs for eye model (use default if eye_filename is None)
+    eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
     # Always load eyes for overlay visualization
     original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
         work_dir,
         include_eyes=True,
         body_model_filename=seg_filename,
         body_encoder_name=seg_encoder,
+        **eye_kwargs,
     )
     model = _ensure_model()
 
