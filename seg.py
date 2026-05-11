@@ -58,21 +58,29 @@ def segmentation_pipeline(
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
     eye_model_filename="best_model_eye_3400.pth",
     eye_encoder_name="vgg16",
+    include_edema=False,
+    edema_model_path=None,
+    edema_repo_id="markdanielarndt/Zebrafish_Segmentation",
+    edema_model_filename="best_model_edema_3400_focal.pth",
+    edema_encoder_name="vgg19",
 ):
     """
     Perform body segmentation on all images in the specified folder.
 
     Optional eye segmentation can be enabled by setting include_eyes=True.
+    Optional edema segmentation can be enabled by setting include_edema=True.
 
     Returns:
         - default: (original_images, segmented_images, grown_images)
         - if include_eyes=True: (original_images, segmented_images, grown_images, eyes_images)
+        - if include_eyes=True and include_edema=True: (original_images, segmented_images, grown_images, eyes_images, edema_images)
     """
     images = load_images_from_path(folder_path)
     segmented_images = []
     grown_images = []
     original_images = []
     eyes_images = []
+    edema_images = []
 
     print(f"Loading body segmentation model from {body_repo_id}/{body_model_filename} (revision={body_revision}, force_download={body_force_download})...")
     loaded_model = _load_unet_model(
@@ -102,6 +110,21 @@ def segmentation_pipeline(
         else:
             print("Eye model loaded successfully!")
 
+    edema_model = None
+    if include_edema:
+        print(f"Loading edema segmentation model from {edema_repo_id}/{edema_model_filename}...")
+        edema_model = _load_unet_model(
+            model_path=edema_model_path,
+            repo_id=edema_repo_id,
+            filename=edema_model_filename,
+            label="edema model",
+            encoder_name=edema_encoder_name,
+        )
+        if edema_model is None:
+            print(f"WARNING: Edema model unavailable at {edema_repo_id}/{edema_model_filename}. Returning empty edema masks.")
+        else:
+            print("Edema model loaded successfully!")
+
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
@@ -127,9 +150,20 @@ def segmentation_pipeline(
                 segmented_eyes_array = np.zeros(target_size, dtype=np.uint8)
             eyes_images.append(segmented_eyes_array)
 
+        if include_edema:
+            if edema_model is not None:
+                segmented_edema, _ = segment_fish(input_image, edema_model, biggest_only=False)
+                segmented_edema_array = np.array(segmented_edema)
+            else:
+                segmented_edema_array = np.zeros(target_size, dtype=np.uint8)
+            edema_images.append(segmented_edema_array)
+
         grown_images.append(grown_image)
         segmented_images.append(filled_image)
         original_images.append(original_image)
+
+    if include_eyes and include_edema:
+        return original_images, segmented_images, grown_images, eyes_images, edema_images
 
     if include_eyes:
         return original_images, segmented_images, grown_images, eyes_images

@@ -64,7 +64,7 @@ def _to_numpy(img):
             img = ((img - img_min) / denom * 255.0).clip(0,255).astype(np.uint8)
     return img
 
-def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, eye_diameters=None):
+def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, edema_areas=None):
     def _clean_numeric(vals):
         out = []
         for v in (vals or []):
@@ -76,7 +76,7 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, eye_d
     curvatures_clean = _clean_numeric(curvatures)
     ratios_clean = _clean_numeric(ratios)
     eye_areas_clean = _clean_numeric(eye_areas)
-    eye_diameters_clean = _clean_numeric(eye_diameters)
+    edema_areas_clean = _clean_numeric(edema_areas)
 
     # Count how many plots we need
     num_plots = sum([
@@ -84,7 +84,7 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, eye_d
         bool(curvatures_clean),
         bool(ratios_clean),
         bool(eye_areas_clean),
-        bool(eye_diameters_clean),
+        bool(edema_areas_clean),
     ])
     if num_plots == 0:
         num_plots = 1  # At least one subplot
@@ -116,10 +116,10 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, eye_d
         plt.title("Eye Areas"); plt.ylabel("Area (µm²)")
         plot_idx += 1
 
-    if eye_diameters_clean:
+    if edema_areas_clean:
         plt.subplot(1, num_plots, plot_idx)
-        plt.boxplot(eye_diameters_clean, vert=True, patch_artist=True)
-        plt.title("Eye Diameters"); plt.ylabel("Diameter (µm)")
+        plt.boxplot(edema_areas_clean, vert=True, patch_artist=True)
+        plt.title("Edema Areas"); plt.ylabel("Area (µm²)")
     
     img_bytes = io.BytesIO()
     plt.tight_layout()
@@ -134,7 +134,7 @@ def write_lengths_to_excel_bytes(
     curvatures,
     ratios,
     eye_areas,
-    eye_diameters,
+    edema_areas,
     threshold_used,
     threshold_value,
     boxplot_png_bytes,
@@ -148,7 +148,7 @@ def write_lengths_to_excel_bytes(
     if curvatures: header.append("Curvature")
     if ratios: header.append("Length/Straight Line Ratio")
     if eye_areas: header.append("Eye Area (µm²)")
-    if eye_diameters: header.append("Eye Diameter (µm)")
+    if edema_areas: header.append("Edema Area (µm²)")
     sh.append(header)
     
     for i, fname in enumerate(filenames):
@@ -167,9 +167,9 @@ def write_lengths_to_excel_bytes(
         if eye_areas:
             ea = eye_areas[i] if i < len(eye_areas) and eye_areas[i] is not None else "N/A"
             row.append(ea)
-        if eye_diameters:
-            ed = eye_diameters[i] if i < len(eye_diameters) and eye_diameters[i] is not None else "N/A"
-            row.append(ed)
+        if edema_areas:
+            eda = edema_areas[i] if i < len(edema_areas) and edema_areas[i] is not None else "N/A"
+            row.append(eda)
         sh.append(row)
 
     def _stats(vals):
@@ -215,11 +215,11 @@ def write_lengths_to_excel_bytes(
         sh.append(["75th Percentile Eye Area (µm²)", p75EA]); sh.append(["Mean Eye Area (µm²)", meanEA])
         sh.append(["Standard Deviation Eye Area (µm²)", stdEA])
 
-    if eye_diameters:
-        medED,p25ED,p75ED,meanED,stdED = _stats(eye_diameters)
-        sh.append(["Median Eye Diameter (µm)", medED]); sh.append(["25th Percentile Eye Diameter (µm)", p25ED])
-        sh.append(["75th Percentile Eye Diameter (µm)", p75ED]); sh.append(["Mean Eye Diameter (µm)", meanED])
-        sh.append(["Standard Deviation Eye Diameter (µm)", stdED])
+    if edema_areas:
+        medEDA,p25EDA,p75EDA,meanEDA,stdEDA = _stats(edema_areas)
+        sh.append(["Median Edema Area (µm²)", medEDA]); sh.append(["25th Percentile Edema Area (µm²)", p25EDA])
+        sh.append(["75th Percentile Edema Area (µm²)", p75EDA]); sh.append(["Mean Edema Area (µm²)", meanEDA])
+        sh.append(["Standard Deviation Edema Area (µm²)", stdEDA])
     sh.append([]); sh.append(["Class Distribution"])
     cls_counts = [0,0,0,0,0]
     for c in curvatures:
@@ -246,7 +246,7 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
 GALLERY_MASK_ALPHA = 0.45
 MANUAL_MASK_ALPHA = 0.15
 
-def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, mask_alpha=GALLERY_MASK_ALPHA) -> np.ndarray:
+def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, mask_alpha=GALLERY_MASK_ALPHA) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
     if mask.shape[:2] != base.shape[:2]:
@@ -267,6 +267,15 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
         red[..., 0] = 255
         em = (eye_norm > 0)[..., None].astype(np.float32)
         overlay = overlay * (1 - 0.35 * em) + red * (0.35 * em)
+
+    if edema_mask is not None:
+        edema_norm = _normalize_mask(edema_mask)
+        if edema_norm.shape[:2] != base.shape[:2]:
+            edema_norm = np.array(PILImage.fromarray(edema_norm).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
+        blue = np.zeros_like(overlay)
+        blue[..., 2] = 255
+        edm = (edema_norm > 0)[..., None].astype(np.float32)
+        overlay = overlay * (1 - 0.4 * edm) + blue * (0.4 * edm)
 
     overlay = overlay.clip(0,255).astype(np.uint8)
 
@@ -618,6 +627,7 @@ def process(folder,
             process_length=True,
             process_ratio=True,
             process_eye_size=True,
+            process_edema=True,
             use_threshold=False,
             threshold_value=0.5,
             physical_horizontal_um_str="",
@@ -627,14 +637,26 @@ def process(folder,
     seg_filename, seg_encoder, eye_filename = SEG_MODEL_OPTIONS.get(seg_model_choice, SEG_MODEL_OPTIONS["General Model"])
     # Build kwargs for eye model (use default if eye_filename is None)
     eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
-    # Always load eyes for overlay visualization
-    original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
-        work_dir,
-        include_eyes=True,
-        body_model_filename=seg_filename,
-        body_encoder_name=seg_encoder,
-        **eye_kwargs,
-    )
+    # Always load eyes for overlay visualization; load edema if requested
+    if process_edema:
+        original_images, segmented_images, grown_images, eyes_images, edema_images = segmentation_pipeline(
+            work_dir,
+            include_eyes=True,
+            include_edema=True,
+            body_model_filename=seg_filename,
+            body_encoder_name=seg_encoder,
+            **eye_kwargs,
+        )
+    else:
+        original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
+            work_dir,
+            include_eyes=True,
+            include_edema=False,
+            body_model_filename=seg_filename,
+            body_encoder_name=seg_encoder,
+            **eye_kwargs,
+        )
+        edema_images = []
     model = _ensure_model()
 
     # Parse physical distances (µm) for full image width/height from user
@@ -658,11 +680,12 @@ def process(folder,
             f"(H=W=5885 µm over 256 px)"
         )
 
-    fish_lengths, curvatures, ratios, eye_areas, eye_diameters, previews = [], [], [], [], [], []
+    fish_lengths, curvatures, ratios, eye_areas, edema_areas, previews = [], [], [], [], [], []
     for i, seg_mask in enumerate(segmented_images):
         path_points = None
         straight_line_points = None
         eye_mask_for_vis = eyes_images[i] if i < len(eyes_images) else None
+        edema_mask_for_vis = edema_images[i] if i < len(edema_images) else None
         seg_mask_bin = seg_mask > 0
 
         # Per-image pixel scales derived from user-provided physical distances
@@ -718,11 +741,22 @@ def process(folder,
                     spacing=(y_scale, x_scale),
                 )
                 eye_areas.append(float(eye_info.get("eye_area", 0.0)))
-                eye_diameters.append(float(eye_info.get("eye_diameter", 0.0)))
             except Exception as e:
                 print(f"Error calculating eye metrics for image {i}: {e}")
                 eye_areas.append(None)
-                eye_diameters.append(None)
+
+        if process_edema:
+            try:
+                edema_mask_bin = (edema_mask_for_vis > 0) if edema_mask_for_vis is not None else None
+                edema_info = compute_eye_metrics(
+                    edema_mask_bin,
+                    mask_fish=None,
+                    spacing=(y_scale, x_scale),
+                )
+                edema_areas.append(float(edema_info.get("eye_area", 0.0)))
+            except Exception as e:
+                print(f"Error calculating edema area for image {i}: {e}")
+                edema_areas.append(None)
 
         if process_curvature:
             try:
@@ -738,6 +772,7 @@ def process(folder,
                 path_points=path_points,
                 straight_line_points=straight_line_points,
                 eye_mask=eye_mask_for_vis,
+                edema_mask=edema_mask_for_vis,
             )
             original_name = filenames[i] if i < len(filenames) else f"image_{i}"
             short = _shorten_name(original_name, max_chars=22)
@@ -747,7 +782,7 @@ def process(folder,
         except Exception:
             pass
 
-    boxplot_png = _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas, eye_diameters)
+    boxplot_png = _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas, edema_areas)
     boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
     # Prepare state for interactive filtering
     # Keep a copy of the original previews so crosses can be added/removed reversibly
@@ -764,7 +799,7 @@ def process(folder,
         'curvatures': curvatures,
         'ratios': ratios,
         'eye_areas': eye_areas,
-        'eye_diameters': eye_diameters,
+        'edema_areas': edema_areas,
         'boxplot_png': boxplot_png,
         'threshold_used': use_threshold,
         'threshold_value': threshold_value,
@@ -773,6 +808,7 @@ def process(folder,
         'original_images': original_images,
         'segmented_images': segmented_images,
         'eyes_images': eyes_images,
+        'edema_images': edema_images,
         'spacing': (y_scale, x_scale),
         'manual_points': {},
     }
@@ -801,7 +837,7 @@ def _generate_corrected_excel(data):
         data.get('curvatures', []),
         data.get('ratios', []),
         data.get('eye_areas', []),
-        data.get('eye_diameters', []),
+        data.get('edema_areas', []),
         data.get('threshold_used', False),
         data.get('threshold_value', 0.0),
         data.get('boxplot_png', None),
@@ -1184,12 +1220,14 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         
         # Regenerate preview for this image
         eye_mask = data.get('eyes_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('eyes_images', [])) else None
+        edema_mask = data.get('edema_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('edema_images', [])) else None
         new_overlay_gallery = _make_seg_overlay(
             original_img,
             seg_mask,
             path_points=path,
             straight_line_points=straight_line_points,
             eye_mask=eye_mask,
+            edema_mask=edema_mask,
             mask_alpha=GALLERY_MASK_ALPHA,
         )
 
@@ -1199,6 +1237,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
             path_points=path,
             straight_line_points=straight_line_points,
             eye_mask=eye_mask,
+            edema_mask=edema_mask,
             mask_alpha=MANUAL_MASK_ALPHA,
         )
         
@@ -1229,7 +1268,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
             data.get('curvatures', []),
             data.get('ratios', []),
             data.get('eye_areas', []),
-            data.get('eye_diameters', []),
+            data.get('edema_areas', []),
         )
         boxplot_np = np.array(PILImage.open(io.BytesIO(boxplot_png)))
         data['boxplot_png'] = boxplot_png
@@ -1347,6 +1386,7 @@ with gr.Blocks() as demo:
         chk_len  = gr.Checkbox(value=True, label="Process Length")
         chk_ratio = gr.Checkbox(value=True, label="Process Length/Straight Line Ratio")
         chk_eye = gr.Checkbox(value=True, label="Process Eye Size")
+        chk_edema = gr.Checkbox(value=True, label="Process Edema")
         chk_thr  = gr.Checkbox(value=False, label="Use Threshold", visible=False)
         thr_val  = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="Threshold Value", visible=False)
 
@@ -1411,7 +1451,7 @@ with gr.Blocks() as demo:
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
-        inputs=[folder, files_state, model_choice, chk_curv, chk_len, chk_ratio, chk_eye, chk_thr, thr_val, phys_w_um, phys_h_um],
+        inputs=[folder, files_state, model_choice, chk_curv, chk_len, chk_ratio, chk_eye, chk_edema, chk_thr, thr_val, phys_w_um, phys_h_um],
         outputs=[out_box, gallery, filenames_list, data_state, spacing_used_md]
     )
 
