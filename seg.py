@@ -6,8 +6,6 @@ import torch
 from segmentation_models_pytorch import Unet
 from huggingface_hub import hf_hub_download
 
-target_size = (256, 256)
-
 def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16"):
     """
     Load a binary Unet model from a local path or from Hugging Face Hub.
@@ -48,6 +46,7 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
 
 def segmentation_pipeline(
     folder_path,
+    target_size=(256, 256),
     include_eyes=False,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
     body_model_filename="best_model_body_3400_vgg19.pth",
@@ -129,9 +128,10 @@ def segmentation_pipeline(
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
 
+    cv2_size = (target_size[1], target_size[0])  # cv2 uses (width, height)
     for img in images:
         original_image = np.array(img)
-        img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+        img = cv2.resize(img, cv2_size, interpolation=cv2.INTER_LINEAR)
 
         processed_image = (img / 255.0 - mean) / std
         input_image = torch.tensor(processed_image, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
@@ -155,7 +155,7 @@ def segmentation_pipeline(
                 segmented_edema, _ = segment_fish(input_image, edema_model, biggest_only=False)
                 segmented_edema_array = np.array(segmented_edema)
             else:
-                segmented_edema_array = np.zeros(target_size, dtype=np.uint8)
+                segmented_edema_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
             edema_images.append(segmented_edema_array)
 
         grown_images.append(grown_image)

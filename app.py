@@ -27,11 +27,12 @@ except Exception:
 MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
 # Registry of available segmentation models
-# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename)
+# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size)
 # eye_hf_filename=None means use the default eye model
 SEG_MODEL_OPTIONS = {
-    "General Model": ("best_model_body_3400_vgg19.pth", "vgg19", None),
-    "Fine-tuned DESY": ("best_model_body_finetuned.pth", "vgg19", "best_model_eye_finetuned.pth"),
+    "Fast & Easy (256 px)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256),
+    "Complex & Slower (512 px)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512),
+    "Fine-tuned DESY": ("best_model_body_finetuned.pth", "vgg19", "best_model_eye_finetuned.pth", 256),
 }
 
 def _ensure_model():
@@ -634,13 +635,16 @@ def process(folder,
             physical_vertical_um_str=""):
     work_dir, filenames = _stage_inputs(files, folder)
     # Resolve chosen segmentation model
-    seg_filename, seg_encoder, eye_filename = SEG_MODEL_OPTIONS.get(seg_model_choice, SEG_MODEL_OPTIONS["General Model"])
+    seg_filename, seg_encoder, eye_filename, model_target_size = SEG_MODEL_OPTIONS.get(
+        seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px)"]
+    )
     # Build kwargs for eye model (use default if eye_filename is None)
     eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
     # Always load eyes for overlay visualization; load edema if requested
     if process_edema:
         original_images, segmented_images, grown_images, eyes_images, edema_images = segmentation_pipeline(
             work_dir,
+            target_size=(model_target_size, model_target_size),
             include_eyes=True,
             include_edema=True,
             body_model_filename=seg_filename,
@@ -650,6 +654,7 @@ def process(folder,
     else:
         original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
             work_dir,
+            target_size=(model_target_size, model_target_size),
             include_eyes=True,
             include_edema=False,
             body_model_filename=seg_filename,
@@ -664,20 +669,20 @@ def process(folder,
     phys_h_um_user = _safe_float(physical_vertical_um_str, default=None)
 
     if phys_w_um_user is not None and phys_h_um_user is not None:
-        y_scale_info = phys_h_um_user / 256
-        x_scale_info = phys_w_um_user / 256
+        y_scale_info = phys_h_um_user / model_target_size
+        x_scale_info = phys_w_um_user / model_target_size
         spacing_info_md = (
             f"**Spacing used:** custom input | "
             f"y = {y_scale_info:.4f} µm/pixel, x = {x_scale_info:.4f} µm/pixel "
-            f"(from H={phys_h_um_user:g} µm, W={phys_w_um_user:g} µm over 256 px)"
+            f"(from H={phys_h_um_user:g} µm, W={phys_w_um_user:g} µm over {model_target_size} px)"
         )
     else:
-        y_scale_info = 5885.0 / 256
-        x_scale_info = 5885.0 / 256
+        y_scale_info = 5885.0 / model_target_size
+        x_scale_info = 5885.0 / model_target_size
         spacing_info_md = (
             f"**Spacing used:** default calibration | "
             f"y = {y_scale_info:.4f} µm/pixel, x = {x_scale_info:.4f} µm/pixel "
-            f"(H=W=5885 µm over 256 px)"
+            f"(H=W=5885 µm over {model_target_size} px)"
         )
 
     fish_lengths, curvatures, ratios, eye_areas, edema_areas, previews = [], [], [], [], [], []
@@ -695,12 +700,12 @@ def process(folder,
             phys_w_um = phys_w_um_user
             phys_h_um = phys_h_um_user
             # Calculate spacing for the new function: (dy, dx) in physical units per pixel
-            y_scale = phys_h_um / 256  # physical units per pixel in y direction
-            x_scale = phys_w_um / 256  # physical units per pixel in x direction
+            y_scale = phys_h_um / model_target_size  # physical units per pixel in y direction
+            x_scale = phys_w_um / model_target_size  # physical units per pixel in x direction
         else:
-            # Default spacing (assuming 5885 µm per 256 pixels as per the original code)
-            y_scale = 5885.0 / 256
-            x_scale = 5885.0 / 256
+            # Default spacing (assuming 5885 µm per model_target_size pixels as per the original code)
+            y_scale = 5885.0 / model_target_size
+            x_scale = 5885.0 / model_target_size
             phys_w_um = 5885.0
             phys_h_um = 5885.0
 
@@ -1302,7 +1307,7 @@ with gr.Blocks() as demo:
         )
         model_choice = gr.Radio(
             choices=list(SEG_MODEL_OPTIONS.keys()),
-            value="General Model",
+            value="Fast & Easy (256 px)",
             label="Model",
         )
 
