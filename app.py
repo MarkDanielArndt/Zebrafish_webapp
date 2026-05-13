@@ -640,10 +640,12 @@ def process(folder,
     )
     # Build kwargs for eye model (use default if eye_filename is None)
     eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
+    # Pass sorted file paths so segmentation results match the sorted filenames list
+    file_paths_sorted = [os.path.join(work_dir, fn) for fn in filenames]
     # Always load eyes for overlay visualization; load edema if requested
     if process_edema:
         original_images, segmented_images, grown_images, eyes_images, edema_images = segmentation_pipeline(
-            work_dir,
+            file_list=file_paths_sorted,
             target_size=(model_target_size, model_target_size),
             include_eyes=True,
             include_edema=True,
@@ -653,7 +655,7 @@ def process(folder,
         )
     else:
         original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
-            work_dir,
+            file_list=file_paths_sorted,
             target_size=(model_target_size, model_target_size),
             include_eyes=True,
             include_edema=False,

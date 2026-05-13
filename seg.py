@@ -45,8 +45,9 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
 
 
 def segmentation_pipeline(
-    folder_path,
+    folder_path=None,
     target_size=(256, 256),
+    file_list=None,
     include_eyes=False,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
     body_model_filename="best_model_body_3400_vgg19.pth",
@@ -64,7 +65,10 @@ def segmentation_pipeline(
     edema_encoder_name="vgg19",
 ):
     """
-    Perform body segmentation on all images in the specified folder.
+    Perform body segmentation on all images in the specified folder or file list.
+
+    Pass either `folder_path` (directory) or `file_list` (sorted list of absolute paths).
+    When `file_list` is provided it takes precedence and preserves the given order.
 
     Optional eye segmentation can be enabled by setting include_eyes=True.
     Optional edema segmentation can be enabled by setting include_edema=True.
@@ -74,7 +78,16 @@ def segmentation_pipeline(
         - if include_eyes=True: (original_images, segmented_images, grown_images, eyes_images)
         - if include_eyes=True and include_edema=True: (original_images, segmented_images, grown_images, eyes_images, edema_images)
     """
-    images = load_images_from_path(folder_path)
+    if file_list is not None:
+        images = []
+        for fp in file_list:
+            img = cv2.imread(fp)
+            if img is not None:
+                images.append(img)
+            else:
+                print(f"Warning: could not load {fp}")
+    else:
+        images = load_images_from_path(folder_path)
     segmented_images = []
     grown_images = []
     original_images = []
