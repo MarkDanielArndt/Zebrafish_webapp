@@ -894,19 +894,25 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         # Smooth the cost map to encourage smooth paths
         cost_map = gaussian_filter(cost_map, sigma=2.0)
         
-        # Ensure manual points are inside the mask
+        # Clip points to image bounds
         p1_int = np.clip(np.round(p1).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
         p2_int = np.clip(np.round(p2).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
-        
-        # If points are outside, find nearest inside point
-        if not seg_mask_bin[p1_int[0], p1_int[1]]:
+
+        # Track whether clicked points were outside the mask so we can extend the path later
+        p1_outside = not seg_mask_bin[p1_int[0], p1_int[1]]
+        p2_outside = not seg_mask_bin[p2_int[0], p2_int[1]]
+        p1_anchor = p1_int.copy()  # actual clicked position (clamped to image bounds)
+        p2_anchor = p2_int.copy()
+
+        # If points are outside the mask, find nearest inside point for internal routing
+        if p1_outside:
             mask_coords = np.argwhere(seg_mask_bin)
             if len(mask_coords) > 0:
                 from scipy.spatial.distance import cdist
                 dist_to_p1 = cdist([p1], mask_coords)[0]
                 p1_int = mask_coords[np.argmin(dist_to_p1)]
-        
-        if not seg_mask_bin[p2_int[0], p2_int[1]]:
+
+        if p2_outside:
             mask_coords = np.argwhere(seg_mask_bin)
             if len(mask_coords) > 0:
                 from scipy.spatial.distance import cdist
@@ -1019,7 +1025,21 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
             mask_diff = np.any(np.diff(path, axis=0) != 0, axis=1)
             keep_indices = np.concatenate([[True], mask_diff])
             path = path[keep_indices]
-        
+
+        # If clicked points were outside the mask, extend path with straight-line segments
+        # from the actual clicked position to the mask boundary entry/exit point.
+        if p1_outside:
+            n_ext = max(2, int(np.ceil(np.linalg.norm(p1_anchor.astype(float) - p1_int.astype(float)))) + 1)
+            t = np.linspace(0, 1, n_ext)[:-1]  # exclude p1_int — already path[0]
+            ext = np.round(p1_anchor[None, :] * (1 - t[:, None]) + p1_int[None, :] * t[:, None]).astype(int)
+            path = np.vstack([ext, path])
+
+        if p2_outside:
+            n_ext = max(2, int(np.ceil(np.linalg.norm(p2_anchor.astype(float) - p2_int.astype(float)))) + 1)
+            t = np.linspace(0, 1, n_ext)[1:]  # exclude p2_int — already path[-1]
+            ext = np.round(p2_int[None, :] * (1 - t[:, None]) + p2_anchor[None, :] * t[:, None]).astype(int)
+            path = np.vstack([path, ext])
+
         # Compute length along path
         pf = path.astype(float)
         dxy = np.diff(pf, axis=0)
