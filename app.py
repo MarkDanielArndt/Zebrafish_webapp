@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image as PILImage
 import cv2
+import time
 
 try:
     import torch
@@ -139,103 +140,145 @@ def write_lengths_to_excel_bytes(
     threshold_used,
     threshold_value,
     boxplot_png_bytes,
+    exclusions=None,   # NEW: dict {img_idx: {'fish_length': bool, 'curvature': bool, ...}}
 ):
+    EXCLUDED = "Excluded"
+    exclusions = exclusions or {}
+
+    def _is_included(idx, metric):
+        """Returns True if metric is NOT excluded for this image index."""
+        return exclusions.get(idx, {}).get(metric, True)
+
     wb = openpyxl.Workbook()
     sh = wb.active
     sh.title = "Fish Data"
-    # Build header dynamically based on what data we have
+
     header = ["Filename"]
     if fish_lengths: header.append("Fish Length (µm)")
-    if curvatures: header.append("Curvature")
-    if ratios: header.append("Length/Straight Line Ratio")
-    if eye_areas: header.append("Eye Area (µm²)")
-    if edema_areas: header.append("Edema Area (µm²)")
+    if curvatures:   header.append("Curvature")
+    if ratios:       header.append("Length/Straight Line Ratio")
+    if eye_areas:    header.append("Eye Area (µm²)")
+    if edema_areas:  header.append("Edema Area (µm²)")
     sh.append(header)
-    
+
     for i, fname in enumerate(filenames):
         row = [fname]
         if fish_lengths:
-            L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
-            row.append(L)
+            raw = fish_lengths[i] if i < len(fish_lengths) else "N/A"
+            row.append(raw if _is_included(i, 'fish_length') else EXCLUDED)
         if curvatures:
-            c = curvatures[i] if i < len(curvatures) else "N/A"
-            if c == 5:
-                c = "Not Classified"
-            row.append(c)
+            raw = curvatures[i] if i < len(curvatures) else "N/A"
+            if raw == 5:
+                raw = "Not Classified"
+            row.append(raw if _is_included(i, 'curvature') else EXCLUDED)
         if ratios:
-            r = ratios[i] if i < len(ratios) else "N/A"
-            row.append(r)
+            raw = ratios[i] if i < len(ratios) else "N/A"
+            row.append(raw if _is_included(i, 'ratio') else EXCLUDED)
         if eye_areas:
-            ea = eye_areas[i] if i < len(eye_areas) and eye_areas[i] is not None else "N/A"
-            row.append(ea)
+            raw = eye_areas[i] if i < len(eye_areas) and eye_areas[i] is not None else "N/A"
+            row.append(raw if _is_included(i, 'eye_area') else EXCLUDED)
         if edema_areas:
-            eda = edema_areas[i] if i < len(edema_areas) and edema_areas[i] is not None else "N/A"
-            row.append(eda)
+            raw = edema_areas[i] if i < len(edema_areas) and edema_areas[i] is not None else "N/A"
+            row.append(raw if _is_included(i, 'edema_area') else EXCLUDED)
         sh.append(row)
 
-    def _stats(vals):
+    def _stats_with_exclusions(vals, metric_key):
+        """Compute stats, skipping excluded values."""
         clean_vals = []
-        for v in vals:
+        for idx, v in enumerate(vals):
+            if not _is_included(idx, metric_key):
+                continue
             if isinstance(v, (int, float)) and np.isfinite(v):
                 clean_vals.append(float(v))
-        if not clean_vals: return ("N/A",)*5
-        vals_sorted = sorted(clean_vals); n = len(vals_sorted)
-        median = vals_sorted[n//2]
-        p25 = vals_sorted[int(n*0.25)]
-        p75 = vals_sorted[int(n*0.75)]
-        mean = sum(vals_sorted)/n
-        std = (sum((x-mean)**2 for x in vals_sorted)/n)**0.5
+        if not clean_vals:
+            return ("N/A",) * 5
+        vals_sorted = sorted(clean_vals)
+        n = len(vals_sorted)
+        median = vals_sorted[n // 2]
+        p25 = vals_sorted[int(n * 0.25)]
+        p75 = vals_sorted[int(n * 0.75)]
+        mean = sum(vals_sorted) / n
+        std = (sum((x - mean) ** 2 for x in vals_sorted) / n) ** 0.5
         return median, p25, p75, mean, std
 
     sh.append([])
     if threshold_used:
         sh.append([f"Threshold used; statistics may be unreliable (threshold: {threshold_value})"])
-    sh.append(["Statistics"])
-    
+
+    # Count how many images were excluded per metric for transparency
+    excluded_counts = {}
+    for metric in ('fish_length', 'curvature', 'ratio', 'eye_area', 'edema_area'):
+        excluded_counts[metric] = sum(
+            1 for i in range(len(filenames)) if not _is_included(i, metric)
+        )
+    excl_note_parts = [f"{k.replace('_', ' ')}: {v}" for k, v in excluded_counts.items() if v > 0]
+    if excl_note_parts:
+        sh.append([f"Excluded from statistics — " + ", ".join(excl_note_parts)])
+
+    sh.append(["Statistics (excluded values not counted)"])
+
     if fish_lengths:
-        medL,p25L,p75L,meanL,stdL = _stats(fish_lengths)
-        sh.append(["Median Length (µm)", medL]); sh.append(["25th Percentile Length (µm)", p25L])
-        sh.append(["75th Percentile Length (µm)", p75L]); sh.append(["Mean Length (µm)", meanL])
+        medL, p25L, p75L, meanL, stdL = _stats_with_exclusions(fish_lengths, 'fish_length')
+        sh.append(["Median Length (µm)", medL])
+        sh.append(["25th Percentile Length (µm)", p25L])
+        sh.append(["75th Percentile Length (µm)", p75L])
+        sh.append(["Mean Length (µm)", meanL])
         sh.append(["Standard Deviation Length (µm)", stdL])
-    
+
     if curvatures:
-        medC,p25C,p75C,meanC,stdC = _stats(curvatures)
-        sh.append(["Median Curvature", medC]); sh.append(["25th Percentile Curvature", p25C])
-        sh.append(["75th Percentile Curvature", p75C]); sh.append(["Mean Curvature", meanC])
+        medC, p25C, p75C, meanC, stdC = _stats_with_exclusions(curvatures, 'curvature')
+        sh.append(["Median Curvature", medC])
+        sh.append(["25th Percentile Curvature", p25C])
+        sh.append(["75th Percentile Curvature", p75C])
+        sh.append(["Mean Curvature", meanC])
         sh.append(["Standard Deviation Curvature", stdC])
-    
+
     if ratios:
-        medR,p25R,p75R,meanR,stdR = _stats(ratios)
-        sh.append(["Median Ratio", medR]); sh.append(["25th Percentile Ratio", p25R])
-        sh.append(["75th Percentile Ratio", p75R]); sh.append(["Mean Ratio", meanR])
+        medR, p25R, p75R, meanR, stdR = _stats_with_exclusions(ratios, 'ratio')
+        sh.append(["Median Ratio", medR])
+        sh.append(["25th Percentile Ratio", p25R])
+        sh.append(["75th Percentile Ratio", p75R])
+        sh.append(["Mean Ratio", meanR])
         sh.append(["Standard Deviation Ratio", stdR])
 
     if eye_areas:
-        medEA,p25EA,p75EA,meanEA,stdEA = _stats(eye_areas)
-        sh.append(["Median Eye Area (µm²)", medEA]); sh.append(["25th Percentile Eye Area (µm²)", p25EA])
-        sh.append(["75th Percentile Eye Area (µm²)", p75EA]); sh.append(["Mean Eye Area (µm²)", meanEA])
+        medEA, p25EA, p75EA, meanEA, stdEA = _stats_with_exclusions(eye_areas, 'eye_area')
+        sh.append(["Median Eye Area (µm²)", medEA])
+        sh.append(["25th Percentile Eye Area (µm²)", p25EA])
+        sh.append(["75th Percentile Eye Area (µm²)", p75EA])
+        sh.append(["Mean Eye Area (µm²)", meanEA])
         sh.append(["Standard Deviation Eye Area (µm²)", stdEA])
 
     if edema_areas:
-        medEDA,p25EDA,p75EDA,meanEDA,stdEDA = _stats(edema_areas)
-        sh.append(["Median Edema Area (µm²)", medEDA]); sh.append(["25th Percentile Edema Area (µm²)", p25EDA])
-        sh.append(["75th Percentile Edema Area (µm²)", p75EDA]); sh.append(["Mean Edema Area (µm²)", meanEDA])
+        medEDA, p25EDA, p75EDA, meanEDA, stdEDA = _stats_with_exclusions(edema_areas, 'edema_area')
+        sh.append(["Median Edema Area (µm²)", medEDA])
+        sh.append(["25th Percentile Edema Area (µm²)", p25EDA])
+        sh.append(["75th Percentile Edema Area (µm²)", p75EDA])
+        sh.append(["Mean Edema Area (µm²)", meanEDA])
         sh.append(["Standard Deviation Edema Area (µm²)", stdEDA])
-    sh.append([]); sh.append(["Class Distribution"])
-    cls_counts = [0,0,0,0,0]
-    for c in curvatures:
-        idx = 4 if c == 5 else int(c)-1
-        if 0 <= idx < 5:
-            cls_counts[idx] += 1
-    labels = ["Class 1","Class 2","Class 3","Class 4","Not Classified"]
-    for i,lbl in enumerate(labels):
+
+    sh.append([])
+    sh.append(["Class Distribution"])
+    cls_counts = [0, 0, 0, 0, 0]
+    for idx, c in enumerate(curvatures):
+        if not _is_included(idx, 'curvature'):
+            continue
+        i_cls = 4 if c == 5 else int(c) - 1
+        if 0 <= i_cls < 5:
+            cls_counts[i_cls] += 1
+    labels = ["Class 1", "Class 2", "Class 3", "Class 4", "Not Classified"]
+    for i, lbl in enumerate(labels):
         sh.append([f"{lbl}", cls_counts[i]])
 
     if boxplot_png_bytes:
         img_stream = io.BytesIO(boxplot_png_bytes)
-        img = ExcelImage(img_stream); sh.add_image(img, "E2")
+        img = ExcelImage(img_stream)
+        sh.add_image(img, "E2")
 
-    buf = io.BytesIO(); wb.save(buf); buf.seek(0); return buf
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
 
 def _normalize_mask(mask: np.ndarray) -> np.ndarray:
     m = _to_numpy(mask).astype(np.float32)
@@ -633,6 +676,7 @@ def process(folder,
             threshold_value=0.5,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
+    t0 = time.perf_counter()
     work_dir, filenames = _stage_inputs(files, folder)
     # Resolve chosen segmentation model
     seg_filename, seg_encoder, eye_filename, model_target_size = SEG_MODEL_OPTIONS.get(
@@ -823,7 +867,9 @@ def process(folder,
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
     
-    return boxplot_np, previews, filenames_md, data_state, spacing_info_md
+    elapsed = time.perf_counter() - t0
+    print(f"[PROCESS TIMING] {seg_model_choice}: {elapsed:.2f}s")
+    return boxplot_np, previews, filenames_md, data_state, spacing_info_md + f"\n\n⏱ **{seg_model_choice} processing time:** {elapsed:.2f} s"
 
 def summarize_files(files):
     if not files: return "No files uploaded."
@@ -834,7 +880,6 @@ def summarize_files(files):
 
 
 def _generate_corrected_excel(data):
-    """Generate a fresh Excel export from the current in-memory results, including manual corrections."""
     if not data:
         return None
 
@@ -848,6 +893,7 @@ def _generate_corrected_excel(data):
         data.get('threshold_used', False),
         data.get('threshold_value', 0.0),
         data.get('boxplot_png', None),
+        exclusions=data.get('exclusions', {}),   # NEW
     )
     tmpout = tempfile.mkdtemp()
     out_xlsx = os.path.join(tmpout, "fish_data_corrected.xlsx")
@@ -1469,6 +1515,23 @@ with gr.Blocks() as demo:
             If you adjusted manual points, this export will include the updated length and ratio values.
             """)
 
+            with gr.Group():
+                gr.Markdown("### 🚫 Exclude Measurements for This Image")
+                gr.Markdown(
+                    "Uncheck any metric you want to mark as **Excluded** in the final Excel "
+                    "(the row will still appear but the cell will say *Excluded* and it won't "
+                    "count toward statistics)."
+                )
+                with gr.Row():
+                    excl_length = gr.Checkbox(value=True, label="Fish Length")
+                    excl_curv   = gr.Checkbox(value=True, label="Curvature")
+                    excl_ratio  = gr.Checkbox(value=True, label="Ratio")
+                    excl_eye    = gr.Checkbox(value=True, label="Eye Area")
+                    excl_edema  = gr.Checkbox(value=True, label="Edema Area")
+                with gr.Row():
+                    save_excl_btn = gr.Button("💾 Save Exclusions for This Image", variant="primary")
+                excl_status = gr.Markdown("")
+
             with gr.Row():
                 gen_corrected_btn = gr.Button("Generate Final Excel", variant="primary")
 
@@ -1586,11 +1649,64 @@ with gr.Blocks() as demo:
         
         return manual_img, manual_idx, manual_instr
     
+
+    def _load_exclusions_for_image(evt: gr.SelectData, data):
+        idx = evt.index
+        if data is None or idx < 0:
+            return True, True, True, True, True
+        excl = data.get('exclusions', {}).get(idx, {})
+        return (
+            excl.get('fish_length', True),
+            excl.get('curvature',   True),
+            excl.get('ratio',       True),
+            excl.get('eye_area',    True),
+            excl.get('edema_area',  True),
+        )
+
+
+    def _save_exclusions(edit_idx, inc_length, inc_curv, inc_ratio, inc_eye, inc_edema, data):
+        """Persist exclusion choices into data_state."""
+        if data is None or edit_idx < 0:
+            return data, "⚠ No image selected."
+        if 'exclusions' not in data:
+            data['exclusions'] = {}
+        data['exclusions'][edit_idx] = {
+            'fish_length': inc_length,
+            'curvature':   inc_curv,
+            'ratio':       inc_ratio,
+            'eye_area':    inc_eye,
+            'edema_area':  inc_edema,
+        }
+        fname = (data['filenames'][edit_idx]
+                if edit_idx < len(data.get('filenames', []))
+                else f"Image {edit_idx}")
+        excluded = [k for k, v in data['exclusions'][edit_idx].items() if not v]
+        if excluded:
+            note = ", ".join(excluded)
+            msg = f"✅ **{fname}** — excluded: {note}"
+        else:
+            msg = f"✅ **{fname}** — all metrics included."
+        return data, msg
+    
     # When a gallery image is clicked, prepare for manual editing
     gallery.select(
         fn=_on_gallery_click,
         inputs=[data_state],
         outputs=[manual_edit_image, edit_image_idx, manual_edit_instructions]
+    )
+
+    # Load exclusion checkboxes when a gallery image is selected
+    gallery.select(
+        fn=_load_exclusions_for_image,
+        inputs=[data_state],
+        outputs=[excl_length, excl_curv, excl_ratio, excl_eye, excl_edema],
+    )
+
+    # Save exclusions button
+    save_excl_btn.click(
+        fn=_save_exclusions,
+        inputs=[edit_image_idx, excl_length, excl_curv, excl_ratio, excl_eye, excl_edema, data_state],
+        outputs=[data_state, excl_status],
     )
 
     gen_corrected_btn.click(
@@ -1599,6 +1715,7 @@ with gr.Blocks() as demo:
         outputs=[out_file_corrected]
     )
     
+
     # When manual edit image is clicked, record the point
     manual_edit_image.select(
         fn=_record_manual_click,
@@ -1619,6 +1736,10 @@ with gr.Blocks() as demo:
         inputs=[edit_image_idx, manual_points_temp, data_state],
         outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image]
     )
+
+
+
+
 
 if __name__ == "__main__":
     demo.launch(share=True)
