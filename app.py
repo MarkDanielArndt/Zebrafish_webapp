@@ -2,13 +2,15 @@ import gradio as gr
 import tempfile, os, shutil
 from typing import List, Optional, Tuple
 from seg import segmentation_pipeline
-from length import load_model, get_fish_length_circles_fixed, classification_curvature, tube_length_border2border, compute_eye_metrics
+from length import load_model, classification_curvature, tube_length_border2border, compute_eye_metrics
 import openpyxl, io
 from openpyxl.drawing.image import Image as ExcelImage
 import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image as PILImage
 import cv2
+from scipy.ndimage import distance_transform_edt, gaussian_filter
+from skimage.graph import route_through_array
 
 try:
     import torch
@@ -27,12 +29,12 @@ except Exception:
 MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
 # Registry of available segmentation models
-# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size)
-# eye_hf_filename=None means use the default eye model
+# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size, edema_hf_filename)
+# None for eye/edema filenames means use the pipeline default
 SEG_MODEL_OPTIONS = {
-    "Fast & Easy (256 px)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256),
-    "Complex & Slower (512 px)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512),
-    "Fine-tuned DESY": ("best_model_body_finetuned.pth", "vgg19", "best_model_eye_finetuned.pth", 256),
+    "Fast & Easy (256 px)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256, None),
+    "Complex & Slower (512 px)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512, None),
+    "Fine-tuned DESY": ("desy_body_512_finetuned.pth", "vgg19", "desy_eye_512_finetuned.pth", 512, "desy_edema_512_finetuned.pth"),
 }
 
 def _ensure_model():
@@ -129,6 +131,13 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, edema
     img_bytes.seek(0)
     return img_bytes.getvalue()
 
+_EXCEL_FORBIDDEN = str.maketrans('', '', r'/\?*[]:'+"'")
+_EXCEL_MAX_SHEET_NAME = 31
+
+def _sanitize_sheet_name(name: str, default: str = "Fish Data") -> str:
+    name = (name or "").strip().translate(_EXCEL_FORBIDDEN)
+    return name[:_EXCEL_MAX_SHEET_NAME] if name else default
+
 def write_lengths_to_excel_bytes(
     filenames,
     fish_lengths,
@@ -139,10 +148,11 @@ def write_lengths_to_excel_bytes(
     threshold_used,
     threshold_value,
     boxplot_png_bytes,
+    sheet_name: str = "Fish Data",
 ):
     wb = openpyxl.Workbook()
     sh = wb.active
-    sh.title = "Fish Data"
+    sh.title = _sanitize_sheet_name(sheet_name)
     # Build header dynamically based on what data we have
     header = ["Filename"]
     if fish_lengths: header.append("Fish Length (µm)")
@@ -174,18 +184,17 @@ def write_lengths_to_excel_bytes(
         sh.append(row)
 
     def _stats(vals):
-        clean_vals = []
-        for v in vals:
-            if isinstance(v, (int, float)) and np.isfinite(v):
-                clean_vals.append(float(v))
-        if not clean_vals: return ("N/A",)*5
-        vals_sorted = sorted(clean_vals); n = len(vals_sorted)
-        median = vals_sorted[n//2]
-        p25 = vals_sorted[int(n*0.25)]
-        p75 = vals_sorted[int(n*0.75)]
-        mean = sum(vals_sorted)/n
-        std = (sum((x-mean)**2 for x in vals_sorted)/n)**0.5
-        return median, p25, p75, mean, std
+        clean_vals = np.array([float(v) for v in (vals or [])
+                                if isinstance(v, (int, float)) and np.isfinite(v)])
+        if len(clean_vals) == 0:
+            return ("N/A",) * 5
+        return (
+            np.median(clean_vals),
+            np.percentile(clean_vals, 25),
+            np.percentile(clean_vals, 75),
+            np.mean(clean_vals),
+            np.std(clean_vals),
+        )
 
     sh.append([])
     if threshold_used:
@@ -321,7 +330,7 @@ def _shorten_name(name: str, max_chars: int = 22) -> str:
     head = keep // 2; tail = keep - head
     return f"{root[:head]}...{root[-tail:]}{ext}"
 
-def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, list]:
+def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, list, Optional[str]]:
     """
     Normalize inputs into a working directory with all images inside, and a
     sorted list of filenames (basenames) that match what will be processed.
@@ -329,6 +338,10 @@ def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, li
       of them into a temp dir and return that dir + filenames.
     - If `folder_input` is a string path to a directory, enumerate it.
     - Otherwise, fall back to `files` (individual uploads) and copy into a temp dir.
+
+    Returns (work_dir, filenames, tmpdir_to_clean): the third element is the temp
+    directory the caller should delete after use, or None when work_dir belongs to
+    the user (Case 2) and must not be removed.
     """
     exts = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
 
@@ -363,14 +376,14 @@ def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, li
                 shutil.copy(p, dst)
                 basenames.append(bn)
             basenames.sort()
-            return tmpdir, basenames
+            return tmpdir, basenames, tmpdir
 
     # Case 2: Folder upload as a single directory path (less common)
     if isinstance(folder_input, str) and os.path.isdir(folder_input):
         names = [n for n in os.listdir(folder_input)
                  if os.path.splitext(n)[1].lower() in exts]
         names.sort()
-        return folder_input, names
+        return folder_input, names, None  # user's own folder — do not delete
 
     # Case 3: Individual files upload (UploadButton)
     tmpdir = tempfile.mkdtemp()
@@ -391,7 +404,7 @@ def _stage_inputs(files: Optional[List[gr.File]], folder_input) -> Tuple[str, li
                 shutil.copy(p, dst)
                 filenames.append(bn)
     filenames.sort()
-    return tmpdir, filenames
+    return tmpdir, filenames, tmpdir
 
 
 def _safe_float(s, default=None):
@@ -633,37 +646,43 @@ def process(folder,
             threshold_value=0.5,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
-    work_dir, filenames = _stage_inputs(files, folder)
+    work_dir, filenames, _tmpdir_to_clean = _stage_inputs(files, folder)
     # Resolve chosen segmentation model
-    seg_filename, seg_encoder, eye_filename, model_target_size = SEG_MODEL_OPTIONS.get(
+    seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename = SEG_MODEL_OPTIONS.get(
         seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px)"]
     )
-    # Build kwargs for eye model (use default if eye_filename is None)
+    # Build kwargs for eye/edema models (use pipeline defaults when filename is None)
     eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
+    edema_kwargs = {} if edema_filename is None else {"edema_model_filename": edema_filename}
     # Pass sorted file paths so segmentation results match the sorted filenames list
     file_paths_sorted = [os.path.join(work_dir, fn) for fn in filenames]
     # Always load eyes for overlay visualization; load edema if requested
-    if process_edema:
-        original_images, segmented_images, grown_images, eyes_images, edema_images = segmentation_pipeline(
-            file_list=file_paths_sorted,
-            target_size=(model_target_size, model_target_size),
-            include_eyes=True,
-            include_edema=True,
-            body_model_filename=seg_filename,
-            body_encoder_name=seg_encoder,
-            **eye_kwargs,
-        )
-    else:
-        original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
-            file_list=file_paths_sorted,
-            target_size=(model_target_size, model_target_size),
-            include_eyes=True,
-            include_edema=False,
-            body_model_filename=seg_filename,
-            body_encoder_name=seg_encoder,
-            **eye_kwargs,
-        )
-        edema_images = []
+    try:
+        if process_edema:
+            original_images, segmented_images, grown_images, eyes_images, edema_images = segmentation_pipeline(
+                file_list=file_paths_sorted,
+                target_size=(model_target_size, model_target_size),
+                include_eyes=True,
+                include_edema=True,
+                body_model_filename=seg_filename,
+                body_encoder_name=seg_encoder,
+                **eye_kwargs,
+                **edema_kwargs,
+            )
+        else:
+            original_images, segmented_images, grown_images, eyes_images = segmentation_pipeline(
+                file_list=file_paths_sorted,
+                target_size=(model_target_size, model_target_size),
+                include_eyes=True,
+                include_edema=False,
+                body_model_filename=seg_filename,
+                body_encoder_name=seg_encoder,
+                **eye_kwargs,
+            )
+            edema_images = []
+    finally:
+        if _tmpdir_to_clean:
+            shutil.rmtree(_tmpdir_to_clean, ignore_errors=True)
     model = _ensure_model()
 
     # Parse physical distances (µm) for full image width/height from user
@@ -716,7 +735,6 @@ def process(folder,
             try:
                 eye_mask_for_length = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
                 spacing = (y_scale, x_scale)
-                print(f"spacing:{spacing}")
                 # Use eye mask when available to stabilize head-side start point.
                 length, straight_length, path_points, straight_line_points = tube_length_border2border(
                     seg_mask_bin,
@@ -833,7 +851,7 @@ def summarize_files(files):
     return "**Uploaded:** " + ", ".join(short) + more
 
 
-def _generate_corrected_excel(data):
+def _generate_corrected_excel(data, sheet_name="Fish Data"):
     """Generate a fresh Excel export from the current in-memory results, including manual corrections."""
     if not data:
         return None
@@ -848,9 +866,10 @@ def _generate_corrected_excel(data):
         data.get('threshold_used', False),
         data.get('threshold_value', 0.0),
         data.get('boxplot_png', None),
+        sheet_name=sheet_name,
     )
-    tmpout = tempfile.mkdtemp()
-    out_xlsx = os.path.join(tmpout, "fish_data_corrected.xlsx")
+    fd, out_xlsx = tempfile.mkstemp(suffix='.xlsx', prefix='fish_data_')
+    os.close(fd)
     with open(out_xlsx, "wb") as f:
         f.write(out_bytes.getvalue())
     return out_xlsx
@@ -871,11 +890,7 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         # Convert points to numpy arrays
         p1 = np.array(point1, dtype=float)
         p2 = np.array(point2, dtype=float)
-        
-        from scipy.ndimage import distance_transform_edt
-        from skimage.graph import route_through_array
-        from scipy.ndimage import gaussian_filter
-        
+
         # Compute distance transform - distance from each pixel to nearest background
         dist_transform = distance_transform_edt(seg_mask_bin)
         
@@ -956,7 +971,7 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
             path_smooth = path.astype(float).copy()
             n = len(path)
             
-            for iteration in range(iterations):
+            for _ in range(iterations):
                 prev = path_smooth.copy()
                 
                 for i in range(1, n - 1):  # Don't smooth endpoints
@@ -1058,24 +1073,6 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
         print(f"Error in manual length computation: {e}")
         import traceback
         traceback.print_exc()
-        # Fallback: straight line between points
-        diff = p2 - p1
-        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
-        path = np.array([p1, p2], dtype=int)
-        return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
-        seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
-        length = float(seg.sum())
-        
-        # Compute straight-line distance
-        diff = p2 - p1
-        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
-        
-        straight_line_points = (tuple(path[0]), tuple(path[-1]))
-        
-        return length, straight_length, path, straight_line_points
-        
-    except Exception as e:
-        print(f"Error in manual length computation: {e}")
         # Fallback: straight line between points
         diff = p2 - p1
         straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
@@ -1470,6 +1467,14 @@ with gr.Blocks() as demo:
             """)
 
             with gr.Row():
+                excel_sheet_name = gr.Textbox(
+                    label="Sheet name",
+                    value="Fish Data",
+                    placeholder="Fish Data",
+                    max_lines=1,
+                )
+
+            with gr.Row():
                 gen_corrected_btn = gr.Button("Generate Final Excel", variant="primary")
 
             with gr.Row():
@@ -1595,7 +1600,7 @@ with gr.Blocks() as demo:
 
     gen_corrected_btn.click(
         fn=_generate_corrected_excel,
-        inputs=[data_state],
+        inputs=[data_state, excel_sheet_name],
         outputs=[out_file_corrected]
     )
     

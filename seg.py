@@ -6,11 +6,18 @@ import torch
 from segmentation_models_pytorch import Unet
 from huggingface_hub import hf_hub_download
 
+_UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name)
+
 def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16"):
     """
     Load a binary Unet model from a local path or from Hugging Face Hub.
     Returns the model instance when successful, otherwise None.
     """
+    cache_key = (model_path or filename, encoder_name)
+    if cache_key in _UNET_CACHE:
+        print(f"{label.capitalize()} served from cache.")
+        return _UNET_CACHE[cache_key]
+
     model = Unet(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
     resolved_path = None
 
@@ -38,6 +45,7 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
         model.load_state_dict(torch.load(resolved_path, map_location=torch.device('cpu')))
         model.eval()
         print(f"{label.capitalize()} loaded from {resolved_path}")
+        _UNET_CACHE[cache_key] = model
         return model
     except Exception as exc:
         print(f"Failed to load {label} from {resolved_path}: {exc}")
@@ -53,7 +61,7 @@ def segmentation_pipeline(
     body_model_filename="best_model_body_3400_vgg19.pth",
     body_encoder_name="vgg19",
     body_revision="main",
-    body_force_download=True,
+    body_force_download=False,
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
     eye_model_filename="best_model_eye_3400.pth",
