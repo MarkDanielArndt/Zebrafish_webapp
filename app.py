@@ -11,6 +11,7 @@ from PIL import Image as PILImage
 import cv2
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 from skimage.graph import route_through_array
+import time
 
 try:
     import torch
@@ -670,6 +671,7 @@ def process(folder,
             threshold_value=0.5,
             physical_horizontal_um_str="",
             physical_vertical_um_str=""):
+    t0 = time.perf_counter()
     work_dir, filenames, _tmpdir_to_clean = _stage_inputs(files, folder)
     # Resolve chosen segmentation model
     seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename = SEG_MODEL_OPTIONS.get(
@@ -865,8 +867,10 @@ def process(folder,
     shown_names = [_shorten_name(n, max_chars=22) for n in filenames[:5]]
     more_note = f" … and {len(filenames) - 5} more" if len(filenames) > 5 else ""
     filenames_md = "**Uploaded:** " + ", ".join(shown_names) + more_note
-    
-    return boxplot_np, previews, filenames_md, data_state, spacing_info_md
+    elapsed = time.perf_counter() - t0
+    n_imgs = len(filenames)
+    print(f"[PROCESS TIMING] {seg_model_choice}: {elapsed:.2f}s ({n_imgs} images)")
+    return boxplot_np, previews, filenames_md, data_state, spacing_info_md + f"\n\n⏱ **{seg_model_choice} processing time:** {elapsed:.2f} s ({n_imgs} image{'s' if n_imgs != 1 else ''})"
 
 def summarize_files(files):
     if not files: return "No files uploaded."
