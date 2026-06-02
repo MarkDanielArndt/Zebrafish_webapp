@@ -1521,6 +1521,14 @@ with gr.Blocks() as demo:
                 )
 
             with gr.Row():
+                excel_sheet_name = gr.Textbox(
+                    label="Sheet name",
+                    value="Fish Data",
+                    placeholder="Fish Data",
+                    max_lines=1,
+                )
+
+            with gr.Row():
                 gen_corrected_btn = gr.Button("Generate Final Excel", variant="primary")
 
             with gr.Row():
