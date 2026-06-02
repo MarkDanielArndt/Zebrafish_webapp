@@ -28,9 +28,9 @@ pinned: false
 
 ### Selecting a Model
 
-Before you begin, you can select the model that will analyze the images. The General Model is trained on a broad dataset. Fine-tuned models are optimized for specific imaging setups.
+Before you begin, you can select the model that will analyze the images. The General Model is trained on a broad dataset. Fine-tuned models are optimized for specific imaging setups. In addition, you can choose between a faster model and a more accurate model.
 
-![Model selection option](Documentation_images/screenshot01.png)
+![Model selection option](Documentation_images/screenshot_model_selector_21_05.png)
 
 ### Uploading Images
 
@@ -94,7 +94,7 @@ You can also skip this step and enter the distances manually.
 
 After uploading your images, choose which endpoints you want to analyze:
 
-![Select endpoints](Documentation_images/screenshot_endpoint_selector.png)
+![Select endpoints](Documentation_images/screenshot_endpoints_21_05.png)
 
 You can select:
 - **Length**: Measure the length of the zebrafish (centerline path length in µm)
@@ -105,6 +105,8 @@ You can select:
   - Class 4: Most healthy (minimal curvature)
 - **Length/Straight Line Ratio**: The ratio between the actual centerline length and the straight-line distance between endpoints. A value close to 1.0 indicates a nearly straight fish, while higher values indicate more curvature. This metric quantifies body curvature independently of fish size.
 - **Eye Size**: Calculates the eye area in µm² and measures the eye diameter in µm. 
+- **Edema**: ... .
+- **Swim Blader**: ... .
 
 ### Run
 
