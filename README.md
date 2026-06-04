@@ -11,6 +11,8 @@ pinned: false
 
 # 🐟 Zebrafish Segmentation Web App
 
+[![Open in Spaces](https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg)](https://huggingface.co/spaces/markdanielarndt/Zebrafish)
+
 ## Table of Contents
 - [How to use the Zebrafish Segmentation Web App](#How-to-use-the-Zebrafish-Segmentation-Web-App)
   - [Selecting a Model](#selecting-a-model)
@@ -149,9 +151,15 @@ If automatic detection fails use Manual Point Adjustment tool to manually set he
 
 ### Generating a Final Excel
 
-When you're ready, press the **Generate Final Excel** button. 
+First, select the desired image from the preview at the top, and then click the checkboxes next to the endpoints you want to exclude from the final statistics. Then press the **Save Exclusions for This Image** button (the row will still appear but the cell will say Excluded and it won't count toward statistics).
 
-![Generate Final Excel](Documentation_images/screenshot_generate_excel.png)
+![Exclude Measurements for This Image](Documentation_images/screenshot_exclude_excel.png)
+
+In the field below, you can enter sheet name that will be generated.
+
+![Sheet name](Documentation_images/screenshot_sheet_name.png)
+
+When you're ready, press the **Generate Final Excel** button. 
 
 Below will be a button to download the file.
 
