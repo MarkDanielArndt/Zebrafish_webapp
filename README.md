@@ -11,7 +11,7 @@ pinned: false
 
 # 🐟 Zebrafish Segmentation Web App
 
-[![Open in Spaces](https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg)](https://huggingface.co/spaces/markdanielarndt/Zebrafish)
+[![Open in Spaces](https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-lg.svg)](https://huggingface.co/spaces/markdanielarndt/Zebrafish)
 
 ## Table of Contents
 - [How to use the Zebrafish Segmentation Web App](#How-to-use-the-Zebrafish-Segmentation-Web-App)
