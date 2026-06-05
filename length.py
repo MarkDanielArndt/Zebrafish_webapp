@@ -142,6 +142,39 @@ def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0)):
         "eye_diameter_points": eye_diameter_points,
     }
 
+def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0)):
+    """
+    Measure the horizontal and vertical diameters of the eye from the binary mask.
+    spacing = (dy, dx) — physical units (µm) per pixel.
+    Returns {‘eye_width_um’: horizontal diameter, ‘eye_height_um’: vertical diameter}.
+    """
+    out = {"eye_width_um": 0.0, "eye_height_um": 0.0}
+    if mask_eye is None:
+        return out
+    m = np.asarray(mask_eye)
+    if m.ndim == 3:
+        m = m[..., 0]
+    m = m > 0
+    if not m.any():
+        return out
+    dy, dx = spacing
+
+    try:
+        import cv2
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(
+            m.astype(np.uint8), connectivity=8)
+        if num > 1:
+            largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+            m = labels == largest
+    except Exception:
+        pass
+
+    ys, xs = np.where(m)
+    width_px  = int(xs.max() - xs.min() + 1)   
+    height_px = int(ys.max() - ys.min() + 1)   
+    out["eye_width_um"]  = float(width_px * dx)
+    out["eye_height_um"] = float(height_px * dy)
+    return out
 
 def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False, mask_eye=None, return_eye_info=False):
     """
