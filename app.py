@@ -2,7 +2,7 @@ import gradio as gr
 import tempfile, os, shutil
 from typing import List, Optional, Tuple
 from seg import segmentation_pipeline
-from length import load_model, classification_curvature, tube_length_border2border, compute_eye_metrics
+from length import load_model, classification_curvature, tube_length_border2border, compute_eye_metrics, compute_eye_diameters
 import openpyxl, io
 from openpyxl.drawing.image import Image as ExcelImage
 import matplotlib.pyplot as plt
@@ -151,6 +151,8 @@ def write_lengths_to_excel_bytes(
     boxplot_png_bytes,
     sheet_name: str = "Fish Data",
     exclusions=None,
+    eye_widths=None,
+    eye_heights=None,
 ):
     EXCLUDED = "Excluded"
     exclusions = exclusions or {}
@@ -167,6 +169,8 @@ def write_lengths_to_excel_bytes(
     if curvatures: header.append("Curvature")
     if ratios: header.append("Length/Straight Line Ratio")
     if eye_areas: header.append("Eye Area (µm²)")
+    if eye_widths: header.append("Eye Width / Horizontal Ø (µm)")
+    if eye_heights: header.append("Eye Height / Vertical Ø (µm)")
     if edema_areas: header.append("Edema Area (µm²)")
     sh.append(header)
 
@@ -186,6 +190,12 @@ def write_lengths_to_excel_bytes(
         if eye_areas:
             ea = eye_areas[i] if i < len(eye_areas) and eye_areas[i] is not None else "N/A"
             row.append(ea if _is_included(i, 'eye_area') else EXCLUDED)
+        if eye_widths:
+            ew = eye_widths[i] if i < len(eye_widths) and eye_widths[i] is not None else "N/A"
+            row.append(ew if _is_included(i, 'eye_area') else EXCLUDED)
+        if eye_heights:
+            eh = eye_heights[i] if i < len(eye_heights) and eye_heights[i] is not None else "N/A"
+            row.append(eh if _is_included(i, 'eye_area') else EXCLUDED)
         if edema_areas:
             eda = edema_areas[i] if i < len(edema_areas) and edema_areas[i] is not None else "N/A"
             row.append(eda if _is_included(i, 'edema_area') else EXCLUDED)
@@ -211,7 +221,7 @@ def write_lengths_to_excel_bytes(
     if threshold_used:
         sh.append([f"Threshold used; statistics may be unreliable (threshold: {threshold_value})"])
 
-    # Примітка про виключені метрики
+    # Note on excluded metrics
     excluded_counts = {}
     for metric in ('fish_length', 'curvature', 'ratio', 'eye_area', 'edema_area'):
         excluded_counts[metric] = sum(
@@ -247,6 +257,18 @@ def write_lengths_to_excel_bytes(
         sh.append(["75th Percentile Eye Area (µm²)", p75EA]); sh.append(["Mean Eye Area (µm²)", meanEA])
         sh.append(["Standard Deviation Eye Area (µm²)", stdEA])
 
+    if eye_widths:
+        medEW,p25EW,p75EW,meanEW,stdEW = _stats(eye_widths, 'eye_area')
+        sh.append(["Median Eye Width (µm)", medEW]); sh.append(["25th Percentile Eye Width (µm)", p25EW])
+        sh.append(["75th Percentile Eye Width (µm)", p75EW]); sh.append(["Mean Eye Width (µm)", meanEW])
+        sh.append(["Standard Deviation Eye Width (µm)", stdEW])
+
+    if eye_heights:
+        medEH,p25EH,p75EH,meanEH,stdEH = _stats(eye_heights, 'eye_area')
+        sh.append(["Median Eye Height (µm)", medEH]); sh.append(["25th Percentile Eye Height (µm)", p25EH])
+        sh.append(["75th Percentile Eye Height (µm)", p75EH]); sh.append(["Mean Eye Height (µm)", meanEH])
+        sh.append(["Standard Deviation Eye Height (µm)", stdEH])
+
     if edema_areas:
         medEDA,p25EDA,p75EDA,meanEDA,stdEDA = _stats(edema_areas, 'edema_area')
         sh.append(["Median Edema Area (µm²)", medEDA]); sh.append(["25th Percentile Edema Area (µm²)", p25EDA])
@@ -281,7 +303,7 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
 GALLERY_MASK_ALPHA = 0.45
 MANUAL_MASK_ALPHA = 0.15
 
-def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, mask_alpha=GALLERY_MASK_ALPHA) -> np.ndarray:
+def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, mask_alpha=GALLERY_MASK_ALPHA, draw_eye_diameters=True) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
     if mask.shape[:2] != base.shape[:2]:
@@ -341,6 +363,32 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
             # dark outline for contrast, then bright magenta on top
             cv2.line(overlay, p1, p2, (0, 0, 0), 6, lineType=cv2.LINE_AA)
             cv2.line(overlay, p1, p2, (255, 0, 255), 3, lineType=cv2.LINE_AA)
+        except Exception:
+            pass
+    if eye_mask is not None and draw_eye_diameters:
+        try:
+            eye_norm = _normalize_mask(eye_mask)
+            if eye_norm.shape[:2] != overlay.shape[:2]:
+                eye_norm = np.array(PILImage.fromarray(eye_norm).resize(
+                    (overlay.shape[1], overlay.shape[0]), resample=PILImage.NEAREST))
+            em = eye_norm > 0
+            if em.any():
+                num, labels, stats, _ = cv2.connectedComponentsWithStats(
+                    em.astype(np.uint8), connectivity=8)
+                if num > 1:
+                    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+                    em = labels == largest
+                ys, xs = np.where(em)
+                ymin, ymax = int(ys.min()), int(ys.max())
+                xmin, xmax = int(xs.min()), int(xs.max())
+                cy = (ymin + ymax) // 2
+                cx = (xmin + xmax) // 2
+                # horizontal diameter (dark outline + green line)
+                cv2.line(overlay, (xmin, cy), (xmax, cy), (0, 0, 0), 4, lineType=cv2.LINE_AA)
+                cv2.line(overlay, (xmin, cy), (xmax, cy), (0, 255, 0), 2, lineType=cv2.LINE_AA)
+                # vertical diameter
+                cv2.line(overlay, (cx, ymin), (cx, ymax), (0, 0, 0), 4, lineType=cv2.LINE_AA)
+                cv2.line(overlay, (cx, ymin), (cx, ymax), (0, 255, 0), 2, lineType=cv2.LINE_AA)
         except Exception:
             pass
 
@@ -733,6 +781,7 @@ def process(folder,
         )
 
     fish_lengths, curvatures, ratios, eye_areas, edema_areas, previews = [], [], [], [], [], []
+    eye_widths, eye_heights = [], []
     for i, seg_mask in enumerate(segmented_images):
         path_points = None
         straight_line_points = None
@@ -784,18 +833,22 @@ def process(folder,
                 pass
 
         if process_eye_size:
-            try:
-                eye_mask_for_metrics = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
-                eye_info = compute_eye_metrics(
-                    eye_mask_for_metrics,
-                    mask_fish=seg_mask_bin,
-                    spacing=(y_scale, x_scale),
-                )
-                eye_areas.append(float(eye_info.get("eye_area", 0.0)))
-            except Exception as e:
-                print(f"Error calculating eye metrics for image {i}: {e}")
-                eye_areas.append(None)
-
+                    try:
+                        eye_mask_for_metrics = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
+                        eye_info = compute_eye_metrics(
+                            eye_mask_for_metrics,
+                            mask_fish=seg_mask_bin,
+                            spacing=(y_scale, x_scale),
+                        )
+                        eye_areas.append(float(eye_info.get("eye_area", 0.0)))
+                        dia = compute_eye_diameters(eye_mask_for_metrics, spacing=(y_scale, x_scale))
+                        eye_widths.append(float(dia.get("eye_width_um", 0.0)))
+                        eye_heights.append(float(dia.get("eye_height_um", 0.0)))
+                    except Exception as e:
+                        print(f"Error calculating eye metrics for image {i}: {e}")
+                        eye_areas.append(None)
+                        eye_widths.append(None)
+                        eye_heights.append(None)
         if process_edema:
             try:
                 edema_mask_bin = (edema_mask_for_vis > 0) if edema_mask_for_vis is not None else None
@@ -850,6 +903,8 @@ def process(folder,
         'curvatures': curvatures,
         'ratios': ratios,
         'eye_areas': eye_areas,
+        'eye_widths': eye_widths,
+        'eye_heights': eye_heights,
         'edema_areas': edema_areas,
         'boxplot_png': boxplot_png,
         'threshold_used': use_threshold,
@@ -895,7 +950,9 @@ def _generate_corrected_excel(data, sheet_name="Fish Data"):
         data.get('threshold_value', 0.0),
         data.get('boxplot_png', None),
         sheet_name=sheet_name,
-        exclusions=data.get('exclusions', {}),   # <-- додано
+        exclusions=data.get('exclusions', {}),
+        eye_widths=data.get('eye_widths', []),
+        eye_heights=data.get('eye_heights', []),
     )
     fd, out_xlsx = tempfile.mkstemp(suffix='.xlsx', prefix='fish_data_')
     os.close(fd)
@@ -1679,14 +1736,14 @@ with gr.Blocks() as demo:
         outputs=[manual_edit_image, edit_image_idx, manual_edit_instructions]
     )
 
-    # Завантажувати чекбокси виключень при виборі зображення в галереї
+    # Load exclusion checkboxes when a gallery image is selected
     gallery.select(
         fn=_load_exclusions_for_image,
         inputs=[data_state],
         outputs=[excl_length, excl_curv, excl_ratio, excl_eye, excl_edema],
     )
 
-    # Зберегти виключення
+    # Save exclusions
     save_excl_btn.click(
         fn=_save_exclusions,
         inputs=[edit_image_idx, excl_length, excl_curv, excl_ratio, excl_eye, excl_edema, data_state],
