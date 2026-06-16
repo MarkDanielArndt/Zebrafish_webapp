@@ -1,4 +1,4 @@
-from seg_helper import load_images_from_path, segment_fish, fill_holes, grow_mask
+from .seg_helper import load_images_from_path, segment_fish, fill_holes, grow_mask
 import os
 import cv2
 import numpy as np
