@@ -54,6 +54,17 @@ def test_segmentation_pipeline_returns_three_tuple(synthetic_fish_image, tmp_pat
     assert len(originals) == 1
 
 
+def test_segmentation_pipeline_accepts_local_model_paths():
+    # Slicer passes pre-downloaded weights as body_model_path/eye_model_path.
+    # Regression: body_model_path was missing from the signature.
+    import inspect
+    from zebrafish_analysis.core.seg import segmentation_pipeline
+
+    params = inspect.signature(segmentation_pipeline).parameters
+    assert "body_model_path" in params
+    assert "eye_model_path" in params
+
+
 def test_segmentation_pipeline_sorted_order(tmp_path):
     """Output count matches number of images in the folder — regression for filename scrambling bug."""
     import cv2

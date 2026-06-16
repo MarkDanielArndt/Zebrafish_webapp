@@ -57,6 +57,7 @@ def segmentation_pipeline(
     target_size=(256, 256),
     file_list=None,
     include_eyes=False,
+    body_model_path=None,
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
     body_model_filename="best_model_body_3400_vgg19.pth",
     body_encoder_name="vgg19",
@@ -102,8 +103,9 @@ def segmentation_pipeline(
     eyes_images = []
     edema_images = []
 
-    print(f"Loading body segmentation model from {body_repo_id}/{body_model_filename} (revision={body_revision}, force_download={body_force_download})...")
+    print(f"Loading body segmentation model from {body_model_path or f'{body_repo_id}/{body_model_filename}'} (revision={body_revision}, force_download={body_force_download})...")
     loaded_model = _load_unet_model(
+        model_path=body_model_path,
         repo_id=body_repo_id,
         filename=body_model_filename,
         label="body model",
