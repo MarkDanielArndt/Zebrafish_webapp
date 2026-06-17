@@ -302,6 +302,7 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
 
 GALLERY_MASK_ALPHA = 0.45
 MANUAL_MASK_ALPHA = 0.15
+MAX_EDITOR_PX = 800  # max display dimension for the mask editor (memory optimisation)
 
 def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, mask_alpha=GALLERY_MASK_ALPHA, draw_eye_diameters=True) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
@@ -782,6 +783,7 @@ def process(folder,
 
     fish_lengths, curvatures, ratios, eye_areas, edema_areas, previews = [], [], [], [], [], []
     eye_widths, eye_heights = [], []
+    paths, straight_lines = [], []  # stored per-image for gallery overlay regeneration
     for i, seg_mask in enumerate(segmented_images):
         path_points = None
         straight_line_points = None
@@ -869,6 +871,8 @@ def process(folder,
             except Exception:
                 pass
 
+        paths.append(path_points)
+        straight_lines.append(straight_line_points)
         try:
             overlay = _make_seg_overlay(
                 original_images[i],
@@ -916,6 +920,8 @@ def process(folder,
         'eyes_images': eyes_images,
         'edema_images': edema_images,
         'spacing': (y_scale, x_scale),
+        'paths': paths,
+        'straight_lines': straight_lines,
         'manual_points': {},
         'exclusions': {},
     }
@@ -1391,6 +1397,218 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
     except Exception as e:
         return data, gr.update(), gr.update(), f"Error applying manual points: {str(e)}", gr.update(), gr.update()
 
+# ── Manual Mask Editor helpers ───────────────────────────────────────────────
+
+_MASK_KEYS = {
+    'Body':  'segmented_images',
+    'Eye':   'eyes_images',
+    'Edema': 'edema_images',
+}
+
+
+def _prepare_editor_value(edit_idx, data, mask_type):
+    """Return an ImageEditor value dict built from the stored mask.
+
+    The existing mask is baked into the background image (avoids Gradio's
+    layer/background CSS misalignment). The layer starts empty so user
+    strokes are always at the correct canvas coordinates.
+    """
+    if data is None or edit_idx < 0:
+        return None
+    imgs = data.get('original_images', [])
+    if edit_idx >= len(imgs):
+        return None
+
+    orig = _to_numpy(imgs[edit_idx])
+    if orig.ndim == 2:
+        orig = np.stack([orig] * 3, axis=-1)
+    elif orig.shape[2] == 4:
+        orig = orig[:, :, :3]
+
+    # Downscale for display – keeps browser memory low
+    h, w = orig.shape[:2]
+    if max(h, w) > MAX_EDITOR_PX:
+        scale = MAX_EDITOR_PX / max(h, w)
+        dw, dh = max(1, int(w * scale)), max(1, int(h * scale))
+        bg = cv2.resize(orig, (dw, dh), interpolation=cv2.INTER_AREA)
+    else:
+        bg = orig.copy()
+    dh, dw = bg.shape[:2]
+
+    # Bake the current mask into the background (pixel-perfect alignment)
+    key = _MASK_KEYS.get(mask_type, 'segmented_images')
+    masks = data.get(key, [])
+    if edit_idx < len(masks) and masks[edit_idx] is not None:
+        m = _normalize_mask(masks[edit_idx])
+        if m.shape[:2] != (dh, dw):
+            m = np.array(PILImage.fromarray(m).resize((dw, dh), resample=PILImage.NEAREST))
+        alpha = 0.45
+        m_f = (m > 127).astype(np.float32)[:, :, None]
+        yellow = np.array([[[255, 200, 0]]], dtype=np.float32)
+        bg = (bg.astype(np.float32) * (1 - alpha * m_f) +
+              yellow * (alpha * m_f)).clip(0, 255).astype(np.uint8)
+
+    # Empty layer – user strokes go here; no pre-existing content means no offset
+    empty_layer = np.zeros((dh, dw, 4), dtype=np.uint8)
+    return {"background": bg, "layers": [empty_layer], "composite": None}
+
+
+def _on_gallery_select_editor(evt: gr.SelectData, data, mask_type):
+    return _prepare_editor_value(evt.index, data, mask_type)
+
+
+def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
+    """Apply user strokes from the layer to the stored mask, then recompute metrics.
+
+    Yellow strokes (#FFC800) → add pixels to mask.
+    Blue strokes (#0044FF)   → remove pixels from mask.
+    Eraser removes strokes from the layer (those pixels keep their original value).
+    Returns updated (data_state, gallery, out_box, status).
+    """
+    if data is None or edit_idx < 0 or editor_data is None:
+        return data, gr.update(), gr.update(), "⚠ No image selected."
+    layers = editor_data.get("layers") or []
+    if not layers or layers[0] is None:
+        return data, gr.update(), gr.update(), "⚠ No layer data found."
+    layer = np.asarray(layers[0])
+    if layer.ndim != 3 or layer.shape[2] < 4:
+        return data, gr.update(), gr.update(), "⚠ Unexpected layer format."
+
+    dh, dw = layer.shape[:2]
+    a = layer[:, :, 3] > 64
+    additions = a & (layer[:, :, 0] > 180) & (layer[:, :, 2] < 80)   # yellow
+    removals  = a & (layer[:, :, 2] > 180) & (layer[:, :, 0] < 80)   # blue
+
+    key = _MASK_KEYS.get(mask_type, 'segmented_images')
+    orig_masks = data.get(key, [])
+    if edit_idx >= len(orig_masks):
+        return data, gr.update(), gr.update(), f"⚠ {mask_type} mask not found for image {edit_idx}."
+
+    # Retrieve current mask and resize to display resolution for editing
+    if orig_masks[edit_idx] is not None:
+        current = _normalize_mask(orig_masks[edit_idx])
+        oh, ow = current.shape[:2]
+        cur_disp = (
+            np.array(PILImage.fromarray(current).resize((dw, dh), resample=PILImage.NEAREST))
+            if current.shape[:2] != (dh, dw) else current.copy()
+        )
+    else:
+        oh, ow = dh, dw
+        cur_disp = np.zeros((dh, dw), dtype=np.uint8)
+
+    new_mask_disp = cur_disp.copy()
+    new_mask_disp[additions] = 255
+    new_mask_disp[removals]  = 0
+
+    # Resize back to original mask resolution
+    new_mask = (
+        np.array(PILImage.fromarray(new_mask_disp).resize((ow, oh), resample=PILImage.NEAREST))
+        if (dh, dw) != (oh, ow) else new_mask_disp
+    )
+    data[key][edit_idx] = new_mask
+
+    # ── Recompute metrics that depend on the changed mask ────────────────────
+    spacing = data.get('spacing', (1.0, 1.0))
+    n_seg   = len(data.get('segmented_images', []))
+    n_eye   = len(data.get('eyes_images',      []))
+    n_edm   = len(data.get('edema_images',     []))
+
+    seg_mask  = data['segmented_images'][edit_idx] if edit_idx < n_seg else None
+    eye_mask  = data['eyes_images'][edit_idx]      if edit_idx < n_eye else None
+    edm_mask  = data['edema_images'][edit_idx]     if edit_idx < n_edm else None
+
+    seg_bin = (seg_mask > 0) if seg_mask is not None else None
+
+    new_path_pts    = None  # will be set for Body edit, used in preview
+    new_straight_pts = None
+
+    if mask_type == 'Body' and seg_bin is not None:
+        try:
+            eye_bin = (eye_mask > 0) if eye_mask is not None else None
+            length, straight, new_path_pts, new_straight_pts = tube_length_border2border(
+                seg_bin,
+                spacing=spacing,
+                return_path=True,
+                return_straight_line=True,
+                mask_eye=eye_bin,
+                return_eye_info=False,
+            )
+            if edit_idx < len(data.get('fish_lengths', [])):
+                data['fish_lengths'][edit_idx] = float(length)
+            if edit_idx < len(data.get('ratios', [])):
+                data['ratios'][edit_idx] = float(length / straight) if straight > 0 else 0.0
+            # Keep stored paths in sync
+            if 'paths' in data and edit_idx < len(data['paths']):
+                data['paths'][edit_idx] = new_path_pts
+            if 'straight_lines' in data and edit_idx < len(data['straight_lines']):
+                data['straight_lines'][edit_idx] = new_straight_pts
+        except Exception:
+            pass
+
+    if mask_type == 'Eye' and eye_mask is not None:
+        try:
+            eye_bin = eye_mask > 0
+            eye_info = compute_eye_metrics(eye_bin, mask_fish=seg_bin, spacing=spacing)
+            if edit_idx < len(data.get('eye_areas', [])):
+                data['eye_areas'][edit_idx] = float(eye_info.get('eye_area', 0.0))
+            dia = compute_eye_diameters(eye_bin, spacing=spacing)
+            if edit_idx < len(data.get('eye_widths', [])):
+                data['eye_widths'][edit_idx]  = float(dia.get('eye_width_um',  0.0))
+            if edit_idx < len(data.get('eye_heights', [])):
+                data['eye_heights'][edit_idx] = float(dia.get('eye_height_um', 0.0))
+        except Exception:
+            pass
+
+    if mask_type == 'Edema' and edm_mask is not None:
+        try:
+            edm_bin  = edm_mask > 0
+            edm_info = compute_eye_metrics(edm_bin, mask_fish=None, spacing=spacing)
+            if edit_idx < len(data.get('edema_areas', [])):
+                data['edema_areas'][edit_idx] = float(edm_info.get('eye_area', 0.0))
+        except Exception:
+            pass
+
+    # Regenerate boxplot
+    boxplot_out = gr.update()
+    try:
+        bp_png = _make_boxplots_image(
+            data.get('fish_lengths', []),
+            data.get('curvatures',   []),
+            data.get('ratios',       []),
+            data.get('eye_areas',    []),
+            data.get('edema_areas',  []),
+        )
+        data['boxplot_png'] = bp_png
+        boxplot_out = np.array(PILImage.open(io.BytesIO(bp_png)))
+    except Exception:
+        pass
+
+    # Regenerate preview overlay, preserving path lines
+    try:
+        orig = data['original_images'][edit_idx]
+        # For Body edit use freshly computed paths; for Eye/Edema reuse stored paths
+        stored_paths    = data.get('paths',        [])
+        stored_straights = data.get('straight_lines', [])
+        path_pts    = new_path_pts    if mask_type == 'Body' else (stored_paths[edit_idx]    if edit_idx < len(stored_paths)    else None)
+        straight_pts = new_straight_pts if mask_type == 'Body' else (stored_straights[edit_idx] if edit_idx < len(stored_straights) else None)
+        new_overlay = _make_seg_overlay(orig, seg_mask, path_pts, straight_pts, eye_mask, edm_mask)
+        fname = data['filenames'][edit_idx] if edit_idx < len(data.get('filenames', [])) else f"Image {edit_idx}"
+        cap = f"{edit_idx}:{_shorten_name(fname, max_chars=22)}"
+        if 'original_previews' in data and edit_idx < len(data['original_previews']):
+            data['original_previews'][edit_idx] = [new_overlay, cap]
+        if 'previews' in data and edit_idx < len(data['previews']):
+            data['previews'][edit_idx] = [new_overlay, cap]
+    except Exception:
+        pass
+
+    return (
+        data,
+        data.get('previews', []),
+        boxplot_out,
+        f"✅ {mask_type} mask saved, metrics recalculated for image {edit_idx}.",
+    )
+
+
 with gr.Blocks() as demo:
     gr.Markdown("# Zebrafish Analyzer")
     gr.Markdown("""
@@ -1542,7 +1760,41 @@ with gr.Blocks() as demo:
             with gr.Row():
                 reset_points_btn = gr.Button("Reset Points", variant="secondary")
                 apply_manual_btn = gr.Button("Apply Manual Points", variant="primary")
-        
+
+        # ── Manual Mask Editor ───────────────────────────────────────────────
+        with gr.Accordion("✏️ Manual Mask Editor", open=False):
+            gr.Markdown(
+                "**🟡 Yellow brush** — add to mask · "
+                "**🔵 Blue brush** — remove from mask · "
+                "**Eraser** — undo your strokes  \n"
+                "Select mask type → draw → click **Apply**."
+            )
+            mask_type_radio = gr.Radio(
+                choices=["Body", "Eye", "Edema"],
+                value="Body",
+                label="Mask type",
+            )
+            mask_editor = gr.ImageEditor(
+                type="numpy",
+                sources=[],
+                layers=True,
+                brush=gr.Brush(
+                    default_size=20,
+                    colors=["#FFC800", "#0044FF"],
+                    default_color="#FFC800",
+                    color_mode="fixed",
+                ),
+                eraser=gr.Eraser(default_size=20),
+                transforms=[],
+                label="🟡 yellow = add  ·  🔵 blue = remove",
+                height=460,
+                value=None,
+            )
+            with gr.Row():
+                apply_mask_btn = gr.Button("✅ Apply", variant="primary")
+                reset_mask_btn = gr.Button("↺ Reset",  variant="secondary")
+            mask_edit_status = gr.Markdown("")
+
         filenames_list = gr.Markdown("")
         
         with gr.Accordion("📄 Final Excel Export", open=True):
@@ -1775,6 +2027,35 @@ with gr.Blocks() as demo:
         fn=_apply_manual_points,
         inputs=[edit_image_idx, manual_points_temp, data_state],
         outputs=[data_state, gallery, out_box, manual_status, manual_edit_accordion, manual_edit_image]
+    )
+
+    # ── Mask editor event wiring ─────────────────────────────────────────────
+    # Load mask into editor when gallery image is selected
+    gallery.select(
+        fn=_on_gallery_select_editor,
+        inputs=[data_state, mask_type_radio],
+        outputs=[mask_editor],
+    )
+
+    # Reload editor when mask type radio changes
+    mask_type_radio.change(
+        fn=_prepare_editor_value,
+        inputs=[edit_image_idx, data_state, mask_type_radio],
+        outputs=[mask_editor],
+    )
+
+    # Save edits back to state
+    apply_mask_btn.click(
+        fn=_apply_mask_edit,
+        inputs=[mask_editor, edit_image_idx, mask_type_radio, data_state],
+        outputs=[data_state, gallery, out_box, mask_edit_status],
+    )
+
+    # Discard edits and reload original mask
+    reset_mask_btn.click(
+        fn=_prepare_editor_value,
+        inputs=[edit_image_idx, data_state, mask_type_radio],
+        outputs=[mask_editor],
     )
 
 if __name__ == "__main__":
