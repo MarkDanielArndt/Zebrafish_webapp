@@ -177,15 +177,17 @@ def write_lengths_to_excel_bytes(
     for i, fname in enumerate(filenames):
         row = [fname]
         if fish_lengths:
-            L = fish_lengths[i] if i < len(fish_lengths) else "N/A"
+            L = fish_lengths[i] if i < len(fish_lengths) and fish_lengths[i] is not None else "N/A"
             row.append(L if _is_included(i, 'fish_length') else EXCLUDED)
         if curvatures:
-            c = curvatures[i] if i < len(curvatures) else "N/A"
-            if c == 5:
+            c = curvatures[i] if i < len(curvatures) else None
+            if c is None:
+                c = "N/A"
+            elif c == 5:
                 c = "Not Classified"
             row.append(c if _is_included(i, 'curvature') else EXCLUDED)
         if ratios:
-            r = ratios[i] if i < len(ratios) else "N/A"
+            r = ratios[i] if i < len(ratios) and ratios[i] is not None else "N/A"
             row.append(r if _is_included(i, 'ratio') else EXCLUDED)
         if eye_areas:
             ea = eye_areas[i] if i < len(eye_areas) and eye_areas[i] is not None else "N/A"
@@ -278,7 +280,7 @@ def write_lengths_to_excel_bytes(
     sh.append([]); sh.append(["Class Distribution"])
     cls_counts = [0,0,0,0,0]
     for idx, c in enumerate(curvatures):
-        if not _is_included(idx, 'curvature'):
+        if not _is_included(idx, 'curvature') or c is None:
             continue
         i_cls = 4 if c == 5 else int(c)-1
         if 0 <= i_cls < 5:
@@ -303,8 +305,9 @@ def _normalize_mask(mask: np.ndarray) -> np.ndarray:
 GALLERY_MASK_ALPHA = 0.45
 MANUAL_MASK_ALPHA = 0.15
 MAX_EDITOR_PX = 800  # max display dimension for the mask editor (memory optimisation)
+GALLERY_MAX_PX = 900  # max display dimension for gallery thumbnails (browser memory optimisation)
 
-def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, mask_alpha=GALLERY_MASK_ALPHA, draw_eye_diameters=True) -> np.ndarray:
+def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, mask_alpha=GALLERY_MASK_ALPHA, draw_eye_diameters=True, max_px=None) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
     if mask.shape[:2] != base.shape[:2]:
@@ -393,7 +396,14 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
         except Exception:
             pass
 
-    return overlay  # Return full resolution image without resizing
+    if max_px is not None:
+        h, w = overlay.shape[:2]
+        if max(h, w) > max_px:
+            scale = max_px / max(h, w)
+            new_w, new_h = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+            overlay = cv2.resize(overlay, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    return overlay  # Full resolution unless max_px is given
 
 def _shorten_name(name: str, max_chars: int = 22) -> str:
     base = os.path.basename(name)
@@ -832,7 +842,9 @@ def process(folder,
                     ratios.append(ratio)
             except Exception as e:
                 print(f"Error calculating length for image {i}: {e}")
-                pass
+                fish_lengths.append(None)
+                if process_ratio:
+                    ratios.append(None)
 
         if process_eye_size:
                     try:
@@ -868,8 +880,9 @@ def process(folder,
             try:
                 _, curv = classification_curvature(original_images[i], grown_images[i], model, use_threshold, threshold_value)
                 curvatures.append(int(curv.item()))
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Error calculating curvature for image {i}: {e}")
+                curvatures.append(None)
 
         paths.append(path_points)
         straight_lines.append(straight_line_points)
@@ -881,6 +894,7 @@ def process(folder,
                 straight_line_points=straight_line_points,
                 eye_mask=eye_mask_for_vis,
                 edema_mask=edema_mask_for_vis,
+                max_px=GALLERY_MAX_PX,
             )
             original_name = filenames[i] if i < len(filenames) else f"image_{i}"
             short = _shorten_name(original_name, max_chars=22)
@@ -1345,6 +1359,7 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
             eye_mask=eye_mask,
             edema_mask=edema_mask,
             mask_alpha=GALLERY_MASK_ALPHA,
+            max_px=GALLERY_MAX_PX,
         )
 
         new_overlay_manual = _make_seg_overlay(
@@ -1453,26 +1468,22 @@ def _prepare_editor_value(edit_idx, data, mask_type):
     return {"background": bg, "layers": [empty_layer], "composite": None}
 
 
-def _on_gallery_select_editor(evt: gr.SelectData, data, mask_type):
-    return _prepare_editor_value(evt.index, data, mask_type)
-
-
 def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
     """Apply user strokes from the layer to the stored mask, then recompute metrics.
 
     Yellow strokes (#FFC800) → add pixels to mask.
     Blue strokes (#0044FF)   → remove pixels from mask.
     Eraser removes strokes from the layer (those pixels keep their original value).
-    Returns updated (data_state, gallery, out_box, status).
+    Returns updated (data_state, gallery, out_box, status, mask_editor).
     """
     if data is None or edit_idx < 0 or editor_data is None:
-        return data, gr.update(), gr.update(), "⚠ No image selected."
+        return data, gr.update(), gr.update(), "⚠ No image selected.", gr.update()
     layers = editor_data.get("layers") or []
     if not layers or layers[0] is None:
-        return data, gr.update(), gr.update(), "⚠ No layer data found."
+        return data, gr.update(), gr.update(), "⚠ No layer data found.", gr.update()
     layer = np.asarray(layers[0])
     if layer.ndim != 3 or layer.shape[2] < 4:
-        return data, gr.update(), gr.update(), "⚠ Unexpected layer format."
+        return data, gr.update(), gr.update(), "⚠ Unexpected layer format.", gr.update()
 
     dh, dw = layer.shape[:2]
     a = layer[:, :, 3] > 64
@@ -1482,7 +1493,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
     key = _MASK_KEYS.get(mask_type, 'segmented_images')
     orig_masks = data.get(key, [])
     if edit_idx >= len(orig_masks):
-        return data, gr.update(), gr.update(), f"⚠ {mask_type} mask not found for image {edit_idx}."
+        return data, gr.update(), gr.update(), f"⚠ {mask_type} mask not found for image {edit_idx}.", gr.update()
 
     # Retrieve current mask and resize to display resolution for editing
     if orig_masks[edit_idx] is not None:
@@ -1591,7 +1602,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
         stored_straights = data.get('straight_lines', [])
         path_pts    = new_path_pts    if mask_type == 'Body' else (stored_paths[edit_idx]    if edit_idx < len(stored_paths)    else None)
         straight_pts = new_straight_pts if mask_type == 'Body' else (stored_straights[edit_idx] if edit_idx < len(stored_straights) else None)
-        new_overlay = _make_seg_overlay(orig, seg_mask, path_pts, straight_pts, eye_mask, edm_mask)
+        new_overlay = _make_seg_overlay(orig, seg_mask, path_pts, straight_pts, eye_mask, edm_mask, max_px=GALLERY_MAX_PX)
         fname = data['filenames'][edit_idx] if edit_idx < len(data.get('filenames', [])) else f"Image {edit_idx}"
         cap = f"{edit_idx}:{_shorten_name(fname, max_chars=22)}"
         if 'original_previews' in data and edit_idx < len(data['original_previews']):
@@ -1606,6 +1617,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
         data.get('previews', []),
         boxplot_out,
         f"✅ {mask_type} mask saved, metrics recalculated for image {edit_idx}.",
+        None,
     )
 
 
@@ -1767,13 +1779,14 @@ with gr.Blocks() as demo:
                 "**🟡 Yellow brush** — add to mask · "
                 "**🔵 Blue brush** — remove from mask · "
                 "**Eraser** — undo your strokes  \n"
-                "Select mask type → draw → click **Apply**."
+                "Select an image in the gallery → choose mask type → click **Load Image into Editor** → draw → click **Apply**."
             )
             mask_type_radio = gr.Radio(
                 choices=["Body", "Eye", "Edema"],
                 value="Body",
                 label="Mask type",
             )
+            load_mask_btn = gr.Button("📥 Load Image into Editor", variant="secondary")
             mask_editor = gr.ImageEditor(
                 type="numpy",
                 sources=[],
@@ -2030,25 +2043,18 @@ with gr.Blocks() as demo:
     )
 
     # ── Mask editor event wiring ─────────────────────────────────────────────
-    # Load mask into editor when gallery image is selected
-    gallery.select(
-        fn=_on_gallery_select_editor,
-        inputs=[data_state, mask_type_radio],
-        outputs=[mask_editor],
-    )
-
-    # Reload editor when mask type radio changes
-    mask_type_radio.change(
+    # Load mask into editor only when the user explicitly clicks the button
+    load_mask_btn.click(
         fn=_prepare_editor_value,
         inputs=[edit_image_idx, data_state, mask_type_radio],
         outputs=[mask_editor],
     )
 
-    # Save edits back to state
+    # Save edits back to state, then clear the canvas
     apply_mask_btn.click(
         fn=_apply_mask_edit,
         inputs=[mask_editor, edit_image_idx, mask_type_radio, data_state],
-        outputs=[data_state, gallery, out_box, mask_edit_status],
+        outputs=[data_state, gallery, out_box, mask_edit_status, mask_editor],
     )
 
     # Discard edits and reload original mask
