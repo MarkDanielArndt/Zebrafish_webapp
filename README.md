@@ -107,8 +107,7 @@ You can select:
   - Class 4: Most healthy (minimal curvature)
 - **Length/Straight Line Ratio**: The ratio between the actual centerline length and the straight-line distance between endpoints. A value close to 1.0 indicates a nearly straight fish, while higher values indicate more curvature. This metric quantifies body curvature independently of fish size.
 - **Eye Size**: Calculates the eye area in µm² and measures the eye diameter in µm. 
-- **Edema**: ... .
-- **Swim Blader**: ... .
+- **Edema**: Calculates the edema area in µm² .
 
 ### Run
 
@@ -120,14 +119,14 @@ To start the processing, click the **Run** button.
 
 After processing, you'll see boxplots visualizing the distribution of the selected endpoints. These boxplots are also included in the Excel file:
 
-![Boxplots](Documentation_images/screenshot_boxplots_new.png)
+![Boxplots](Documentation_images/screenshot_box_19_06.webp)
 
 The boxplots display:
 - **Fish Lengths**: Distribution of measured centerline lengths in µm
 - **Curvatures**: Distribution of curvature classifications (1-4)
 - **Length/Straight Line Ratio**: Distribution of the length ratio metric, where values closer to 1.0 indicate straighter fish
 - **Eye Area**: Distribution of calculated eye areas in µm²
-- **Eye Diameter**: Distribution of measured eye diameters in µm
+- **Edema Area**: Distribution of calculated edema areas in µm²
 
 The ratio visualization helps identify fish with significant body curvature. You can see in the example image that some fish have ratios above 1.0, indicating curved body shapes:
 
@@ -148,6 +147,23 @@ If automatic detection fails use Manual Point Adjustment tool to manually set he
 - Click 'Apply Manual Points' to recalculate the length
 
 ![Manual points](Documentation_images/screenshot_manual_point.png)
+
+If you want to correct an incorrect segmentation by yourself, use the **Manual Mask Editor tool**.
+After selecting the required image from the gallery at the top, choose the appropriate layer: body, eye, or edema, and click **Load Image into Editor**. 
+
+![Mask Editor](Documentation_images/screenshot_mask_editor.png)
+
+The tool selection is located on the left. To draw in missing fragments, select the brush tool and the yellow color. To remove excess parts, paint over them with blue. The eraser tool is used to erase the strokes you just drew. 
+
+![Mask Editor Tools](Documentation_images/screenshot_mask_editor_tools.png)
+
+You can also adjust the size of the selected tool by clicking the button at the bottom of the toolbar.
+
+![Mask Editor Tools Size](Documentation_images/screenshot_mask_editor_tools_size.png)
+
+To erase everything you’ve drawn, click the **Reset** button. 
+To apply the changes, click **Apply**. After that, the canvas will be cleared, and the updated image will appear in the gallery at the top.
+
 
 ### Generating a Final Excel
 
