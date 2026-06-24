@@ -134,10 +134,15 @@ def _make_boxplots_image(fish_lengths, curvatures, ratios, eye_areas=None, edema
 
 _EXCEL_FORBIDDEN = str.maketrans('', '', r'/\?*[]:'+"'")
 _EXCEL_MAX_SHEET_NAME = 31
+_FILENAME_FORBIDDEN = str.maketrans('', '', r'/\?*[]:<>|"')
 
 def _sanitize_sheet_name(name: str, default: str = "Fish Data") -> str:
     name = (name or "").strip().translate(_EXCEL_FORBIDDEN)
     return name[:_EXCEL_MAX_SHEET_NAME] if name else default
+
+def _sanitize_filename(name: str, default: str = "Fish Data") -> str:
+    name = (name or "").strip().translate(_FILENAME_FORBIDDEN)
+    return name if name else default
 
 def write_lengths_to_excel_bytes(
     filenames,
@@ -974,8 +979,8 @@ def _generate_corrected_excel(data, sheet_name="Fish Data"):
         eye_widths=data.get('eye_widths', []),
         eye_heights=data.get('eye_heights', []),
     )
-    fd, out_xlsx = tempfile.mkstemp(suffix='.xlsx', prefix='fish_data_')
-    os.close(fd)
+    out_dir = tempfile.mkdtemp(prefix='fish_data_')
+    out_xlsx = os.path.join(out_dir, f"{_sanitize_filename(sheet_name)}.xlsx")
     with open(out_xlsx, "wb") as f:
         f.write(out_bytes.getvalue())
     return out_xlsx
@@ -1862,10 +1867,7 @@ with gr.Blocks() as demo:
                 )
 
             with gr.Row():
-                gen_corrected_btn = gr.Button("Generate Final Excel", variant="primary")
-
-            with gr.Row():
-                out_file_corrected = gr.File(label="Download final results (.xlsx)")
+                gen_corrected_btn = gr.DownloadButton("Generate Final Excel", variant="primary")
 
 
     def _load_exclusions_for_image(evt: gr.SelectData, data):
@@ -2037,7 +2039,7 @@ with gr.Blocks() as demo:
     gen_corrected_btn.click(
         fn=_generate_corrected_excel,
         inputs=[data_state, excel_sheet_name],
-        outputs=[out_file_corrected]
+        outputs=[gen_corrected_btn]
     )
     
     # When manual edit image is clicked, record the point
