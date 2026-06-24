@@ -33,8 +33,8 @@ MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 # Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size, edema_hf_filename)
 # None for eye/edema filenames means use the pipeline default
 SEG_MODEL_OPTIONS = {
-    "Fast & Easy (256 px)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256, None),
-    "Complex & Slower (512 px)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512, None),
+    "Fast & Easy (256 px, ~2s/image)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256, None),
+    "Complex & Slower (512 px, ~7s/image)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512, None),
     "Fine-tuned DESY": ("desy_body_512_finetuned.pth", "vgg19", "desy_eye_512_finetuned.pth", 512, "desy_edema_512_finetuned.pth"),
 }
 
@@ -734,7 +734,7 @@ def process(folder,
     work_dir, filenames, _tmpdir_to_clean = _stage_inputs(files, folder)
     # Resolve chosen segmentation model
     seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename = SEG_MODEL_OPTIONS.get(
-        seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px)"]
+        seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px, ~2s/image)"]
     )
     # Build kwargs for eye/edema models (use pipeline defaults when filename is None)
     eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
@@ -764,7 +764,7 @@ def process(folder,
                 body_encoder_name=seg_encoder,
                 **eye_kwargs,
             )
-            edema_images = []
+            edema_images = [None] * len(original_images)
     finally:
         if _tmpdir_to_clean:
             shutil.rmtree(_tmpdir_to_clean, ignore_errors=True)
@@ -1504,7 +1504,15 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
             if current.shape[:2] != (dh, dw) else current.copy()
         )
     else:
-        oh, ow = dh, dw
+        # No mask exists yet for this image — use the resolution of the body
+        # segmentation mask (all stored masks share that resolution), not the
+        # editor's display canvas size, so newly-drawn masks stay aligned with
+        # spacing-dependent metrics (area/length calculations).
+        seg_ref = data.get('segmented_images', [])
+        if edit_idx < len(seg_ref) and seg_ref[edit_idx] is not None:
+            oh, ow = _normalize_mask(seg_ref[edit_idx]).shape[:2]
+        else:
+            oh, ow = dh, dw
         cur_disp = np.zeros((dh, dw), dtype=np.uint8)
 
     new_mask_disp = cur_disp.copy()
@@ -1637,13 +1645,24 @@ with gr.Blocks() as demo:
         gr.Markdown("### 🔬 Segmentation Model")
         gr.Markdown(
             "Select the body segmentation model to use. "
-            "The **General Model** is trained on a broad dataset. "
-            "Fine-tuned models are optimised for specific imaging setups."
+            "**Fast & Easy** is quicker but less accurate. "
+            "**Complex & Slower** takes longer but is more accurate."
         )
         model_choice = gr.Radio(
-            choices=list(SEG_MODEL_OPTIONS.keys()),
-            value="Fast & Easy (256 px)",
+            choices=["Fast & Easy (256 px, ~2s/image)", "Complex & Slower (512 px, ~7s/image)"],
+            value="Fast & Easy (256 px, ~2s/image)",
             label="Model",
+        )
+        with gr.Accordion("Other models", open=False):
+            finetuned_choice = gr.Radio(
+                choices=["(none)", "Fine-tuned DESY"],
+                value="(none)",
+                label="Fine-tuned model (only use if you know what this is)",
+            )
+        finetuned_choice.change(
+            lambda v: gr.update(value=v) if v != "(none)" else gr.update(value="Fast & Easy (256 px, ~2s/image)"),
+            inputs=finetuned_choice,
+            outputs=model_choice,
         )
 
     gr.Markdown("## 2. Upload Images")
