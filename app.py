@@ -726,6 +726,7 @@ def _apply_scalebar_points(sb_points, bar_label_um_str, folder_input, files):
 def process(folder,
             files: Optional[List[gr.File]],
             seg_model_choice="General Model",
+            use_finetuned_desy=False,
             process_curvature=True,
             process_length=True,
             process_ratio=True,
@@ -737,7 +738,9 @@ def process(folder,
             physical_vertical_um_str=""):
     t0 = time.perf_counter()
     work_dir, filenames, _tmpdir_to_clean = _stage_inputs(files, folder)
-    # Resolve chosen segmentation model
+    # Resolve chosen segmentation model (fine-tuned DESY checkbox overrides the preset radio)
+    if use_finetuned_desy:
+        seg_model_choice = "Fine-tuned DESY"
     seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename = SEG_MODEL_OPTIONS.get(
         seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px, ~2s/image)"]
     )
@@ -1658,15 +1661,22 @@ with gr.Blocks() as demo:
             value="Fast & Easy (256 px, ~2s/image)",
             label="Model",
         )
+        last_preset_choice = gr.State("Fast & Easy (256 px, ~2s/image)")
         with gr.Accordion("Other models", open=False):
-            finetuned_choice = gr.Radio(
-                choices=["(none)", "Fine-tuned DESY"],
-                value="(none)",
-                label="Fine-tuned model (only use if you know what this is)",
+            finetuned_choice = gr.Checkbox(
+                value=False,
+                label="Fine-tuned DESY (only use if you know what this is)",
             )
+        # Picking a preset directly always wins: uncheck DESY and remember the preset.
+        model_choice.select(
+            lambda choice: (gr.update(value=False), choice),
+            inputs=model_choice,
+            outputs=[finetuned_choice, last_preset_choice],
+        )
+        # Checking DESY clears the preset selection; unchecking restores the last preset.
         finetuned_choice.change(
-            lambda v: gr.update(value=v) if v != "(none)" else gr.update(value="Fast & Easy (256 px, ~2s/image)"),
-            inputs=finetuned_choice,
+            lambda checked, preset: gr.update(value=None) if checked else gr.update(value=preset),
+            inputs=[finetuned_choice, last_preset_choice],
             outputs=model_choice,
         )
 
@@ -1907,7 +1917,7 @@ with gr.Blocks() as demo:
     # Use files from state, not a giant Files list
     run.click(
         fn=process,
-        inputs=[folder, files_state, model_choice, chk_curv, chk_len, chk_ratio, chk_eye, chk_edema, chk_thr, thr_val, phys_w_um, phys_h_um],
+        inputs=[folder, files_state, model_choice, finetuned_choice, chk_curv, chk_len, chk_ratio, chk_eye, chk_edema, chk_thr, thr_val, phys_w_um, phys_h_um],
         outputs=[out_box, gallery, filenames_list, data_state, spacing_used_md]
     )
 
