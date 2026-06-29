@@ -1756,7 +1756,7 @@ with gr.Blocks() as demo:
     gr.Markdown("""
     ### 📖 For detailed instructions and usage examples, please visit the [GitHub repository](https://github.com/MarkDanielArndt/Zebrafish_webapp).
 
-    ### ⭐ This webapp is provided freely to the research community — if you find it useful, please **star the repository on GitHub**! It costs nothing and helps us a lot.
+    #### ⭐ This webapp is provided freely to the research community — if you find it useful, please **star the repository on GitHub**! It costs nothing and helps us a lot.
 
     If you use this tool in your research, please cite: *[Paper - soon to be published]*.
 
