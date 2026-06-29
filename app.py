@@ -1048,6 +1048,7 @@ def summarize_files(files):
 
 def _generate_corrected_excel(data, sheet_name="Fish Data"):
     if not data:
+        gr.Warning("⚠ No results to export yet — click **Run** first.")
         return None
 
     out_bytes = write_lengths_to_excel_bytes(
@@ -1071,6 +1072,8 @@ def _generate_corrected_excel(data, sheet_name="Fish Data"):
     out_xlsx = os.path.join(out_dir, f"{_sanitize_filename(sheet_name)}.xlsx")
     with open(out_xlsx, "wb") as f:
         f.write(out_bytes.getvalue())
+    gr.Info(f"✅ '{_sanitize_filename(sheet_name)}.xlsx' generated — your download should start automatically. "
+            "⭐ If this tool is useful, please star the repo on GitHub!")
     return out_xlsx
 
 
