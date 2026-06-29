@@ -385,11 +385,12 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
         swim_norm = _normalize_mask(swimbladder_mask)
         if swim_norm.shape[:2] != base.shape[:2]:
             swim_norm = np.array(PILImage.fromarray(swim_norm).resize((base.shape[1], base.shape[0]), resample=PILImage.NEAREST))
-        orange = np.zeros_like(overlay)
-        orange[..., 0] = 255
-        orange[..., 1] = 140
+        pink = np.zeros_like(overlay)
+        pink[..., 0] = 255
+        pink[..., 1] = 105
+        pink[..., 2] = 180
         swm = (swim_norm > 0)[..., None].astype(np.float32)
-        overlay = overlay * (1 - 0.4 * swm) + orange * (0.4 * swm)
+        overlay = overlay * (1 - 0.4 * swm) + pink * (0.4 * swm)
 
     overlay = overlay.clip(0,255).astype(np.uint8)
 
