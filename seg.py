@@ -71,6 +71,11 @@ def segmentation_pipeline(
     edema_repo_id="markdanielarndt/Zebrafish_Segmentation",
     edema_model_filename="best_model_edema_3400_focal.pth",
     edema_encoder_name="vgg19",
+    include_swimbladder=False,
+    swimbladder_model_path=None,
+    swimbladder_repo_id="markdanielarndt/Zebrafish_Segmentation",
+    swimbladder_model_filename="best_model_swimmbladder_256.pth",
+    swimbladder_encoder_name="vgg16",
 ):
     """
     Perform body segmentation on all images in the specified folder or file list.
@@ -80,11 +85,15 @@ def segmentation_pipeline(
 
     Optional eye segmentation can be enabled by setting include_eyes=True.
     Optional edema segmentation can be enabled by setting include_edema=True.
+    Optional swim bladder segmentation can be enabled by setting include_swimbladder=True.
 
-    Returns:
+    Returns (always in this fixed order, only including what was requested):
         - default: (original_images, segmented_images, grown_images)
-        - if include_eyes=True: (original_images, segmented_images, grown_images, eyes_images)
-        - if include_eyes=True and include_edema=True: (original_images, segmented_images, grown_images, eyes_images, edema_images)
+        - if include_eyes=True: (..., eyes_images)
+        - if include_eyes=True and include_edema=True: (..., eyes_images, edema_images)
+        - if include_eyes=True and include_swimbladder=True: (..., eyes_images, swimbladder_images)
+        - if include_eyes=True and include_edema=True and include_swimbladder=True:
+          (..., eyes_images, edema_images, swimbladder_images)
     """
     if file_list is not None:
         images = []
@@ -101,6 +110,7 @@ def segmentation_pipeline(
     original_images = []
     eyes_images = []
     edema_images = []
+    swimbladder_images = []
 
     print(f"Loading body segmentation model from {body_repo_id}/{body_model_filename} (revision={body_revision}, force_download={body_force_download})...")
     loaded_model = _load_unet_model(
@@ -145,6 +155,21 @@ def segmentation_pipeline(
         else:
             print("Edema model loaded successfully!")
 
+    swimbladder_model = None
+    if include_swimbladder:
+        print(f"Loading swim bladder segmentation model from {swimbladder_repo_id}/{swimbladder_model_filename}...")
+        swimbladder_model = _load_unet_model(
+            model_path=swimbladder_model_path,
+            repo_id=swimbladder_repo_id,
+            filename=swimbladder_model_filename,
+            label="swim bladder model",
+            encoder_name=swimbladder_encoder_name,
+        )
+        if swimbladder_model is None:
+            print(f"WARNING: Swim bladder model unavailable at {swimbladder_repo_id}/{swimbladder_model_filename}. Returning empty swim bladder masks.")
+        else:
+            print("Swim bladder model loaded successfully!")
+
     # Preprocessing parameters
     mean = np.array([0.485, 0.456, 0.406])
     std = np.array([0.229, 0.224, 0.225])
@@ -179,14 +204,25 @@ def segmentation_pipeline(
                 segmented_edema_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
             edema_images.append(segmented_edema_array)
 
+        if include_swimbladder:
+            if swimbladder_model is not None:
+                segmented_swimbladder, _ = segment_fish(input_image, swimbladder_model, biggest_only=True)
+                segmented_swimbladder_array = np.array(segmented_swimbladder)
+            else:
+                segmented_swimbladder_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
+            swimbladder_images.append(segmented_swimbladder_array)
+
         grown_images.append(grown_image)
         segmented_images.append(filled_image)
         original_images.append(original_image)
 
-    if include_eyes and include_edema:
-        return original_images, segmented_images, grown_images, eyes_images, edema_images
-
     if include_eyes:
+        if include_edema and include_swimbladder:
+            return original_images, segmented_images, grown_images, eyes_images, edema_images, swimbladder_images
+        if include_edema:
+            return original_images, segmented_images, grown_images, eyes_images, edema_images
+        if include_swimbladder:
+            return original_images, segmented_images, grown_images, eyes_images, swimbladder_images
         return original_images, segmented_images, grown_images, eyes_images
 
     return original_images, segmented_images, grown_images

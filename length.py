@@ -176,6 +176,78 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0)):
     out["eye_height_um"] = float(height_px * dy)
     return out
 
+def compute_tube_metrics(mask, spacing=(1.0, 1.0)):
+    """
+    Fit a minimum-area rotated rectangle to a tube-shaped binary mask.
+
+    Unlike a simple bounding box, the rectangle follows the tube's actual
+    orientation, so the short side is the cross-sectional width regardless of
+    how the tube is rotated in the image (the long side is discarded — callers
+    that only care about the body length already get that from
+    tube_length_border2border).
+
+    spacing: (dy, dx) physical units per pixel.
+
+    Returns dict with keys:
+        area: physical area (spacing units squared)
+        length: long-axis extent (spacing units) — the "long part"
+        width: short-axis extent (spacing units) — the tube width
+        length_line: ((r1,c1),(r2,c2)) endpoints of the long-axis midline, or None
+        width_line: ((r1,c1),(r2,c2)) endpoints of the width midline, or None
+    """
+    out = {"area": 0.0, "length": 0.0, "width": 0.0, "length_line": None, "width_line": None}
+    if mask is None:
+        return out
+    m = np.asarray(mask)
+    if m.ndim == 3:
+        m = m[..., 0]
+    m = (m > 0).astype(np.uint8)
+    if not m.any():
+        return out
+    dy, dx = spacing
+
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(m, connectivity=8)
+    if num > 1:
+        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        m = (labels == largest).astype(np.uint8)
+
+    out["area"] = float(int(m.sum()) * dy * dx)
+
+    contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return out
+    contour = max(contours, key=cv2.contourArea)
+    if len(contour) < 3:
+        return out
+
+    box = cv2.boxPoints(cv2.minAreaRect(contour))  # 4 (x, y) pixel points, in order around the rect
+    box_rc = box[:, ::-1]  # -> (row, col) to match this codebase's point convention
+    A, B, C, D = box_rc
+
+    def _phys_len(p1, p2):
+        dr, dc = (p2[0] - p1[0]) * dy, (p2[1] - p1[1]) * dx
+        return float(np.sqrt(dr ** 2 + dc ** 2))
+
+    def _mid(p1, p2):
+        return ((p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0)
+
+    side_AB, side_BC = _phys_len(A, B), _phys_len(B, C)
+
+    # The segment joining the midpoints of a pair of parallel sides spans the
+    # *other* pair's side length (it cuts straight across the rectangle), so
+    # the line with length == side_AB is mid(BC)-mid(DA), and vice versa.
+    if side_AB >= side_BC:
+        out["length"], out["width"] = side_AB, side_BC
+        out["length_line"] = (_mid(B, C), _mid(D, A))
+        out["width_line"] = (_mid(A, B), _mid(C, D))
+    else:
+        out["length"], out["width"] = side_BC, side_AB
+        out["length_line"] = (_mid(A, B), _mid(C, D))
+        out["width_line"] = (_mid(B, C), _mid(D, A))
+
+    return out
+
+
 def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False, mask_eye=None, return_eye_info=False):
     """
     Border-to-border, branch-free centerline length for a tube-like binary mask.
