@@ -30,12 +30,13 @@ except Exception:
 MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
 # Registry of available segmentation models
-# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size, edema_hf_filename, swimbladder_hf_filename)
+# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size, edema_hf_filename,
+#                               swimbladder_hf_filename, swimbladder_encoder_name, swimbladder_model_type)
 # None for eye/edema/swimbladder filenames means use the pipeline default
 SEG_MODEL_OPTIONS = {
-    "Fast & Easy (256 px, ~2s/image)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256, None, None),
-    "Complex & Slower (512 px, ~7s/image)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512, None, None),
-    "Fine-tuned DESY": ("desy_body_512_finetuned.pth", "vgg19", "desy_eye_512_finetuned.pth", 512, "desy_edema_512_finetuned.pth", None),
+    "Fast & Easy (256 px, ~2s/image)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256, None, None, None, None),
+    "Complex & Slower (512 px, ~7s/image)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512, None, "swimmbladder_512_01072026.pth", "vgg16", "FPN"),
+    "Fine-tuned DESY": ("desy_body_512_finetuned.pth", "vgg19", "desy_eye_512_finetuned.pth", 512, "desy_edema_512_finetuned.pth", "swimmbladder_512_01072026.pth", "vgg16", "FPN"),
 }
 
 def _ensure_model():
@@ -802,13 +803,18 @@ def process(folder,
     # Resolve chosen segmentation model (fine-tuned DESY checkbox overrides the preset radio)
     if use_finetuned_desy:
         seg_model_choice = "Fine-tuned DESY"
-    seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename, swimbladder_filename = SEG_MODEL_OPTIONS.get(
+    (seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename,
+     swimbladder_filename, swimbladder_encoder, swimbladder_model_type) = SEG_MODEL_OPTIONS.get(
         seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px, ~2s/image)"]
     )
     # Build kwargs for eye/edema/swimbladder models (use pipeline defaults when filename is None)
     eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
     edema_kwargs = {} if edema_filename is None else {"edema_model_filename": edema_filename}
-    swimbladder_kwargs = {} if swimbladder_filename is None else {"swimbladder_model_filename": swimbladder_filename}
+    swimbladder_kwargs = {} if swimbladder_filename is None else {
+        "swimbladder_model_filename": swimbladder_filename,
+        "swimbladder_encoder_name": swimbladder_encoder,
+        "swimbladder_model_type": swimbladder_model_type,
+    }
     # Pass sorted file paths so segmentation results match the sorted filenames list
     file_paths_sorted = [os.path.join(work_dir, fn) for fn in filenames]
     # Always load eyes for overlay visualization; load edema/swim bladder if requested
@@ -1072,7 +1078,7 @@ def _generate_corrected_excel(data, sheet_name="Fish Data"):
     out_xlsx = os.path.join(out_dir, f"{_sanitize_filename(sheet_name)}.xlsx")
     with open(out_xlsx, "wb") as f:
         f.write(out_bytes.getvalue())
-    gr.Info(f"✅ '{_sanitize_filename(sheet_name)}.xlsx' generated — your download should start automatically. "
+    gr.Info(f"✅ '{_sanitize_filename(sheet_name)}.xlsx' generated — your download should start automatically (if not: click Generate Final Excel again). "
             "⭐ If this tool is useful, please star the repo on GitHub!")
     return out_xlsx
 

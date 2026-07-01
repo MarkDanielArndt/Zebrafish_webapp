@@ -3,22 +3,25 @@ import os
 import cv2
 import numpy as np
 import torch
-from segmentation_models_pytorch import Unet
+from segmentation_models_pytorch import Unet, FPN
 from huggingface_hub import hf_hub_download
 
-_UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name)
+_UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name, model_type)
 
-def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16"):
+_MODEL_TYPES = {"Unet": Unet, "FPN": FPN}
+
+def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16", model_type="Unet"):
     """
-    Load a binary Unet model from a local path or from Hugging Face Hub.
+    Load a binary segmentation model (Unet or FPN) from a local path or from Hugging Face Hub.
     Returns the model instance when successful, otherwise None.
     """
-    cache_key = (model_path or filename, encoder_name)
+    cache_key = (model_path or filename, encoder_name, model_type)
     if cache_key in _UNET_CACHE:
         print(f"{label.capitalize()} served from cache.")
         return _UNET_CACHE[cache_key]
 
-    model = Unet(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
+    model_cls = _MODEL_TYPES[model_type]
+    model = model_cls(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
     resolved_path = None
 
     if model_path and os.path.exists(model_path):
@@ -74,8 +77,9 @@ def segmentation_pipeline(
     include_swimbladder=False,
     swimbladder_model_path=None,
     swimbladder_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    swimbladder_model_filename="best_model_swimmbladder_256.pth",
-    swimbladder_encoder_name="vgg16",
+    swimbladder_model_filename="swimmbladder_256_01072026.pth",
+    swimbladder_encoder_name="vgg19",
+    swimbladder_model_type="Unet",
 ):
     """
     Perform body segmentation on all images in the specified folder or file list.
@@ -164,6 +168,7 @@ def segmentation_pipeline(
             filename=swimbladder_model_filename,
             label="swim bladder model",
             encoder_name=swimbladder_encoder_name,
+            model_type=swimbladder_model_type,
         )
         if swimbladder_model is None:
             print(f"WARNING: Swim bladder model unavailable at {swimbladder_repo_id}/{swimbladder_model_filename}. Returning empty swim bladder masks.")
