@@ -544,41 +544,17 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
 
             if len(ecoords) > 0:
                 eye_centroid = ecoords.mean(axis=0)
-                # Nearest fish-border pixel to the eye mask -- used only to pick
-                # which path endpoint is the head (orientation), not as the final anchor.
+                # Closest fish-border pixel to the eye mask
                 dist_be = cdist(bcoords.astype(float), ecoords.astype(float))
-                min_dist_per_border = dist_be.min(axis=1)
-                nearest_border = bcoords[np.argmin(min_dist_per_border)].astype(int)
+                closest_border = bcoords[np.argmin(dist_be.min(axis=1))].astype(int)
+                closest_border_to_eye = closest_border
 
                 # Orient path so the nearer endpoint is at the start
-                d0 = np.linalg.norm(path[0].astype(float) - nearest_border.astype(float))
-                d1 = np.linalg.norm(path[-1].astype(float) - nearest_border.astype(float))
+                d0 = np.linalg.norm(path[0].astype(float) - closest_border.astype(float))
+                d1 = np.linalg.norm(path[-1].astype(float) - closest_border.astype(float))
                 if d1 < d0:
                     path = path[::-1]
                     extension_mask = extension_mask[::-1]
-
-                # The single nearest boundary pixel to the eye is not always the nose
-                # tip: when the eye sits low/ventral in the head, that nearest point
-                # can land on the underside of the head instead of the front. So,
-                # among boundary points reasonably close to the eye, pick the one that
-                # extends farthest in the head's outward direction (the local skeleton
-                # tangent at this end, now that path[0] is the head end).
-                closest_border = nearest_border
-                step_dir = min(15, len(path) - 1)
-                if step_dir >= 1:
-                    tangent = path[0].astype(float) - path[step_dir].astype(float)
-                    tnorm = np.linalg.norm(tangent)
-                    if tnorm > 1e-6:
-                        tangent = tangent / tnorm
-                        eye_extent = float(max(np.ptp(ecoords[:, 0]), np.ptp(ecoords[:, 1]))) if len(ecoords) > 1 else 0.0
-                        radius = min_dist_per_border.min() + 1.5 * eye_extent + 1.0
-                        cand_idx = np.where(min_dist_per_border <= radius)[0]
-                        if len(cand_idx) > 0:
-                            cand_points = bcoords[cand_idx]
-                            projections = cand_points.astype(float) @ tangent
-                            closest_border = cand_points[np.argmax(projections)].astype(int)
-
-                closest_border_to_eye = closest_border
 
                 # Remove anchor "swerve": trim to nearest existing path point,
                 # then reconnect to the eye anchor with a smooth C1 bridge.
@@ -1032,4 +1008,3 @@ def preprocess_masked_image(image, target_size=(256, 256)):
     resized_image = cv2.resize(padded_image, target_size, interpolation=cv2.INTER_LINEAR)
 
     return resized_image
-
