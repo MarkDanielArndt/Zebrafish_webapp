@@ -1653,6 +1653,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
 
     new_path_pts    = None  # will be set for Body edit, used in preview
     new_straight_pts = None
+    recompute_failed = False
 
     if mask_type == 'Body' and seg_bin is not None:
         try:
@@ -1675,7 +1676,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
             if 'straight_lines' in data and edit_idx < len(data['straight_lines']):
                 data['straight_lines'][edit_idx] = new_straight_pts
         except Exception:
-            pass
+            recompute_failed = True
 
     if mask_type == 'Eye' and eye_mask is not None:
         try:
@@ -1689,7 +1690,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
             if edit_idx < len(data.get('eye_heights', [])):
                 data['eye_heights'][edit_idx] = float(dia.get('eye_height_um', 0.0))
         except Exception:
-            pass
+            recompute_failed = True
 
     if mask_type == 'Edema' and edm_mask is not None:
         try:
@@ -1698,7 +1699,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
             if edit_idx < len(data.get('edema_areas', [])):
                 data['edema_areas'][edit_idx] = float(edm_info.get('eye_area', 0.0))
         except Exception:
-            pass
+            recompute_failed = True
 
     if mask_type == 'Swim Bladder' and swim_mask is not None:
         try:
@@ -1711,7 +1712,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
             if 'swim_width_lines' in data and edit_idx < len(data['swim_width_lines']):
                 data['swim_width_lines'][edit_idx] = swim_info.get('width_line')
         except Exception:
-            pass
+            recompute_failed = True
 
     # Regenerate boxplot
     boxplot_out = gr.update()
@@ -1728,7 +1729,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
         data['boxplot_png'] = bp_png
         boxplot_out = np.array(PILImage.open(io.BytesIO(bp_png)))
     except Exception:
-        pass
+        recompute_failed = True
 
     # Regenerate preview overlay, preserving path lines
     try:
@@ -1749,13 +1750,19 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
         if 'previews' in data and edit_idx < len(data['previews']):
             data['previews'][edit_idx] = [new_overlay, cap]
     except Exception:
-        pass
+        recompute_failed = True
 
+    status = (
+        f"⚠ {mask_type} mask saved for image {edit_idx}, but metrics/preview recalculation "
+        f"failed partway — re-open the editor and re-apply, or check the mask for issues."
+        if recompute_failed else
+        f"✅ {mask_type} mask saved, metrics recalculated for image {edit_idx}."
+    )
     return (
         data,
         data.get('previews', []),
         boxplot_out,
-        f"✅ {mask_type} mask saved, metrics recalculated for image {edit_idx}.",
+        status,
         None,
     )
 
@@ -1951,7 +1958,7 @@ with gr.Blocks() as demo:
             mask_editor = gr.ImageEditor(
                 type="numpy",
                 sources=[],
-                layers=True,
+                layers=False,  # single-layer editing only: _apply_mask_edit reads layers[0]
                 brush=gr.Brush(
                     default_size=20,
                     colors=["#FFC800", "#0044FF"],
@@ -2162,6 +2169,13 @@ with gr.Blocks() as demo:
         outputs=[manual_edit_image, edit_image_idx, manual_edit_instructions]
     )
 
+    # Selecting a different image invalidates any unsaved mask-editor strokes —
+    # clear the canvas so a stray "Apply" can't write them to the wrong image.
+    gallery.select(
+        fn=lambda: (None, ""),
+        outputs=[mask_editor, mask_edit_status]
+    )
+
     # Load exclusion checkboxes when a gallery image is selected
     gallery.select(
         fn=_load_exclusions_for_image,
@@ -2204,6 +2218,13 @@ with gr.Blocks() as demo:
     )
 
     # ── Mask editor event wiring ─────────────────────────────────────────────
+    # Switching mask type invalidates any unsaved strokes drawn for the previous
+    # mask type — clear the canvas so a stray "Apply" can't write them to the wrong mask.
+    mask_type_radio.change(
+        fn=lambda: (None, ""),
+        outputs=[mask_editor, mask_edit_status]
+    )
+
     # Load mask into editor only when the user explicitly clicks the button
     load_mask_btn.click(
         fn=_prepare_editor_value,

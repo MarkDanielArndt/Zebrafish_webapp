@@ -1008,4 +1008,3 @@ def preprocess_masked_image(image, target_size=(256, 256)):
     resized_image = cv2.resize(padded_image, target_size, interpolation=cv2.INTER_LINEAR)
 
     return resized_image
-
