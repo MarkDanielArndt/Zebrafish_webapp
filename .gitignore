@@ -1,2 +1,11 @@
 runs
 *.pth
+.venv/
+.vscode/settings.json
+
+# Local scratch space for testing algorithm changes; never pushed to the repo
+local_testing/
+
+# Standalone pipeline-visualization video generator (not part of the app)
+pipeline_visualization_video.py
+pipeline_visualization_output.mp4
