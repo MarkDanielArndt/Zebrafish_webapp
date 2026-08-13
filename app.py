@@ -1124,21 +1124,32 @@ def _compute_manual_length(seg_mask, points, spacing):
         # Smooth the cost map to encourage smooth paths
         cost_map = gaussian_filter(cost_map, sigma=2.0)
 
+        # Precompute pixel coordinate grids once, used to bias each segment's routing
+        # toward the straight line the user drew between two consecutive clicks
+        # (see route_segment below).
+        grid_rows, grid_cols = np.indices(seg_mask_bin.shape)
+
         # Apply smoothing while keeping points inside the mask
-        def smooth_path_constrained(path, mask, iterations=8):
+        def smooth_path_constrained(path, mask, iterations=8, fixed_mask=None):
             """
             Smooth path while ensuring all points stay inside the mask.
+            fixed_mask: optional bool array (len == len(path)); True marks points
+            that must never move (e.g. straight-line extensions to a clicked point
+            that lies outside the mask), in addition to the first/last points.
             """
             if len(path) < 5:
                 return path
 
             path_smooth = path.astype(float).copy()
             n = len(path)
+            if fixed_mask is None:
+                fixed_mask = np.zeros(n, dtype=bool)
+            movable = np.array([i for i in range(1, n - 1) if not fixed_mask[i]], dtype=int)
 
             for _ in range(iterations):
                 prev = path_smooth.copy()
 
-                for i in range(1, n - 1):  # Don't smooth endpoints
+                for i in movable:
                     # Weighted average with neighbors
                     window = 7
                     half_w = window // 2
@@ -1159,7 +1170,7 @@ def _compute_manual_length(seg_mask, points, spacing):
                     path_smooth[i] = alpha * smoothed + (1 - alpha) * prev[i]
 
                 # Project points back to mask if they went outside
-                for i in range(1, n - 1):
+                for i in movable:
                     pi = np.round(path_smooth[i]).astype(int)
                     pi = np.clip(pi, [0, 0], [mask.shape[0]-1, mask.shape[1]-1])
 
@@ -1197,7 +1208,12 @@ def _compute_manual_length(seg_mask, points, spacing):
             return path_smooth
 
         def route_segment(pa, pb):
-            """Route a smoothed, mask-constrained path between two points."""
+            """Route a raw (unsmoothed), mask-constrained path between two points,
+            biased to stay close to the straight line the user drew from pa to pb
+            rather than snapping onto the fish's overall centerline — otherwise a
+            waypoint placed off-centerline (e.g. to route around the yolk sac)
+            gets swallowed by the centerline pull, producing a one-pixel spike
+            that immediately snaps back rather than a real bend."""
             pa_int = np.clip(np.round(pa).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
             pb_int = np.clip(np.round(pb).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
 
@@ -1219,10 +1235,26 @@ def _compute_manual_length(seg_mask, points, spacing):
                         dist_to_pb = cdist([pb], mask_coords)[0]
                         pb_int = mask_coords[np.argmin(dist_to_pb)]
 
-            # Find path with minimum cost through the center
+            # Bias the cost map toward the straight line between the two clicked
+            # points so routing follows user intent instead of fully chasing the
+            # thickest part of the mask.
+            seg_vec = (pb_int - pa_int).astype(float)
+            seg_len = np.linalg.norm(seg_vec)
+            if seg_len > 1e-6:
+                seg_dir = seg_vec / seg_len
+                rel_r = grid_rows - pa_int[0]
+                rel_c = grid_cols - pa_int[1]
+                # Perpendicular distance from the infinite line through pa, pb
+                perp_dist = np.abs(rel_r * seg_dir[1] - rel_c * seg_dir[0])
+                line_weight = 0.35 * max_dist / max(seg_len, 1.0)
+                segment_cost_map = cost_map + line_weight * perp_dist
+            else:
+                segment_cost_map = cost_map
+
+            # Find path with minimum cost, biased toward the user's line
             try:
                 indices, weight = route_through_array(
-                    cost_map,
+                    segment_cost_map,
                     start=tuple(pa_int),
                     end=tuple(pb_int),
                     fully_connected=True,
@@ -1237,42 +1269,57 @@ def _compute_manual_length(seg_mask, points, spacing):
                 seg_path = np.round(seg_path).astype(int)
 
             if len(seg_path) < 2:
-                return np.array([pa.astype(int), pb.astype(int)], dtype=int)
-
-            # Apply constrained smoothing
-            seg_path = smooth_path_constrained(seg_path, seg_mask_bin, iterations=10)
-
-            # Remove duplicate consecutive points
-            if len(seg_path) >= 2:
-                mask_diff = np.any(np.diff(seg_path, axis=0) != 0, axis=1)
-                keep_indices = np.concatenate([[True], mask_diff])
-                seg_path = seg_path[keep_indices]
+                seg_path = np.array([pa_int, pb_int], dtype=int)
+            ext_mask = np.zeros(len(seg_path), dtype=bool)
 
             # If clicked points were outside the mask, extend path with straight-line segments
             # from the actual clicked position to the mask boundary entry/exit point.
+            # These extension points are marked fixed so the later smoothing pass
+            # doesn't pull them back inside the mask.
             if pa_outside:
                 n_ext = max(2, int(np.ceil(np.linalg.norm(pa_anchor.astype(float) - pa_int.astype(float)))) + 1)
                 t = np.linspace(0, 1, n_ext)[:-1]  # exclude pa_int — already seg_path[0]
                 ext = np.round(pa_anchor[None, :] * (1 - t[:, None]) + pa_int[None, :] * t[:, None]).astype(int)
                 seg_path = np.vstack([ext, seg_path])
+                ext_mask = np.concatenate([np.ones(len(ext), dtype=bool), ext_mask])
 
             if pb_outside:
                 n_ext = max(2, int(np.ceil(np.linalg.norm(pb_anchor.astype(float) - pb_int.astype(float)))) + 1)
                 t = np.linspace(0, 1, n_ext)[1:]  # exclude pb_int — already seg_path[-1]
                 ext = np.round(pb_int[None, :] * (1 - t[:, None]) + pb_anchor[None, :] * t[:, None]).astype(int)
                 seg_path = np.vstack([seg_path, ext])
+                ext_mask = np.concatenate([ext_mask, np.ones(len(ext), dtype=bool)])
 
-            return seg_path
+            return seg_path, ext_mask
 
         # Route through each consecutive pair of points (head -> waypoints -> tail),
         # stitching the segments together without duplicating shared junction points.
         full_segments = []
+        full_ext_masks = []
         for i in range(len(pts) - 1):
-            seg_path = route_segment(pts[i], pts[i + 1])
+            seg_path, seg_ext_mask = route_segment(pts[i], pts[i + 1])
             if i > 0:
                 seg_path = seg_path[1:]
+                seg_ext_mask = seg_ext_mask[1:]
             full_segments.append(seg_path)
+            full_ext_masks.append(seg_ext_mask)
         path = np.vstack(full_segments)
+        ext_mask = np.concatenate(full_ext_masks)
+
+        # Smooth the full stitched path in one pass (not per-segment) so that
+        # waypoint junctions get smoothed like any other interior point instead
+        # of being protected as hard, un-smoothable corners. Points belonging to
+        # an outside-mask extension stay fixed throughout.
+        if len(path) >= 2:
+            mask_diff = np.any(np.diff(path, axis=0) != 0, axis=1)
+            keep_indices = np.concatenate([[True], mask_diff])
+            path = path[keep_indices]
+            ext_mask = ext_mask[keep_indices]
+        path = smooth_path_constrained(path, seg_mask_bin, iterations=10, fixed_mask=ext_mask)
+        if len(path) >= 2:
+            mask_diff = np.any(np.diff(path, axis=0) != 0, axis=1)
+            keep_indices = np.concatenate([[True], mask_diff])
+            path = path[keep_indices]
 
         # Compute length along path
         pf = path.astype(float)
