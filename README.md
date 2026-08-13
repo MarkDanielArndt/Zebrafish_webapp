@@ -146,7 +146,8 @@ A gallery displays segmentation overlays for the uploaded images (thumbnails inc
 If automatic detection fails use Manual Point Adjustment tool to manually set head and tail points. 
 
 - Click an image in the gallery above to select it for manual editing
-- Click on the large image below to set HEAD (green) and TAIL (red) points
+- Click on the large image below to set the HEAD (green, 1st click) and TAIL (red, last click) points
+- Optionally click additional midway points between HEAD and TAIL (yellow) to force the path through them
 - Click 'Apply Manual Points' to recalculate the length
 
 ![Manual points](Documentation_images/screenshot_manual_point.png)

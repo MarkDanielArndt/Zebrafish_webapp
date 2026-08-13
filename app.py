@@ -1084,129 +1084,85 @@ def _generate_corrected_excel(data, sheet_name="Fish Data"):
 
 
 
-def _compute_manual_length(seg_mask, point1, point2, spacing):
+def _compute_manual_length(seg_mask, points, spacing):
     """
-    Compute length from manually selected points using a smooth path through the center of the fish.
-    Ensures the path always stays inside the segmented region.
-    point1, point2: (row, col) tuples in mask coordinates
+    Compute length from a sequence of manually selected points using a smooth path
+    through the center of the fish. Ensures the path always stays inside the
+    segmented region.
+    points: list of (row, col) tuples in mask coordinates, ordered head -> ... -> tail.
+            Must contain at least 2 points; any points between the first and last
+            are treated as midway waypoints the path must pass through.
     spacing: (dy, dx) physical units per pixel
     """
+    dy, dx = spacing
+    pts = [np.array(p, dtype=float) for p in points]
+    p1, p2 = pts[0], pts[-1]
+
+    def straight_dist(a, b):
+        diff = b - a
+        return float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
+
+    def straight_fallback():
+        straight_length = sum(straight_dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1))
+        path = np.array([p.astype(int) for p in pts], dtype=int)
+        return straight_length, straight_dist(p1, p2), path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
+
     try:
         seg_mask_bin = seg_mask > 0
-        dy, dx = spacing
-        
-        # Convert points to numpy arrays
-        p1 = np.array(point1, dtype=float)
-        p2 = np.array(point2, dtype=float)
 
         # Compute distance transform - distance from each pixel to nearest background
         dist_transform = distance_transform_edt(seg_mask_bin)
-        
+
         if dist_transform.max() == 0:
-            # Fallback: straight line
-            diff = p2 - p1
-            straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
-            path = np.array([p1, p2], dtype=int)
-            return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
-        
+            return straight_fallback()
+
         # Create cost map: lower cost in the center (high distance), higher cost at edges
         # Invert distance: paths prefer to go through the thickest/central parts
         max_dist = dist_transform.max()
         cost_map = np.where(seg_mask_bin, max_dist - dist_transform + 0.1, 1e10)
-        
+
         # Smooth the cost map to encourage smooth paths
         cost_map = gaussian_filter(cost_map, sigma=2.0)
-        
-        # Clip points to image bounds
-        p1_int = np.clip(np.round(p1).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
-        p2_int = np.clip(np.round(p2).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
 
-        # Track whether clicked points were outside the mask so we can extend the path later
-        p1_outside = not seg_mask_bin[p1_int[0], p1_int[1]]
-        p2_outside = not seg_mask_bin[p2_int[0], p2_int[1]]
-        p1_anchor = p1_int.copy()  # actual clicked position (clamped to image bounds)
-        p2_anchor = p2_int.copy()
-
-        # If points are outside the mask, find nearest inside point for internal routing
-        if p1_outside:
-            mask_coords = np.argwhere(seg_mask_bin)
-            if len(mask_coords) > 0:
-                from scipy.spatial.distance import cdist
-                dist_to_p1 = cdist([p1], mask_coords)[0]
-                p1_int = mask_coords[np.argmin(dist_to_p1)]
-
-        if p2_outside:
-            mask_coords = np.argwhere(seg_mask_bin)
-            if len(mask_coords) > 0:
-                from scipy.spatial.distance import cdist
-                dist_to_p2 = cdist([p2], mask_coords)[0]
-                p2_int = mask_coords[np.argmin(dist_to_p2)]
-        
-        # Find path with minimum cost through the center
-        try:
-            indices, weight = route_through_array(
-                cost_map, 
-                start=tuple(p1_int), 
-                end=tuple(p2_int),
-                fully_connected=True,
-                geometric=True
-            )
-            path = np.array(indices, dtype=int)
-        except Exception as e:
-            print(f"Route finding failed: {e}, using straight line")
-            # Fallback: interpolate straight line
-            n_points = int(np.ceil(np.linalg.norm(p2_int - p1_int))) + 1
-            t = np.linspace(0, 1, n_points)
-            path = p1_int[None, :] * (1 - t[:, None]) + p2_int[None, :] * t[:, None]
-            path = np.round(path).astype(int)
-        
-        if len(path) < 2:
-            # Fallback: straight line
-            diff = p2 - p1
-            straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
-            path = np.array([p1, p2], dtype=int)
-            return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
-        
         # Apply smoothing while keeping points inside the mask
-        def smooth_path_constrained(path, mask, dist_map, iterations=8):
+        def smooth_path_constrained(path, mask, iterations=8):
             """
             Smooth path while ensuring all points stay inside the mask.
-            Uses distance transform to weight smoothing - more in thick regions.
             """
             if len(path) < 5:
                 return path
-            
+
             path_smooth = path.astype(float).copy()
             n = len(path)
-            
+
             for _ in range(iterations):
                 prev = path_smooth.copy()
-                
+
                 for i in range(1, n - 1):  # Don't smooth endpoints
                     # Weighted average with neighbors
                     window = 7
                     half_w = window // 2
                     start_idx = max(0, i - half_w)
                     end_idx = min(n, i + half_w + 1)
-                    
+
                     # Gaussian weights
                     indices = np.arange(start_idx, end_idx)
                     weights = np.exp(-0.5 * ((indices - i) / 2.5) ** 2)
                     weights /= weights.sum()
-                    
+
                     # Smooth
                     local_points = prev[start_idx:end_idx]
                     smoothed = (weights[:, None] * local_points).sum(axis=0)
-                    
+
                     # High smoothing factor
                     alpha = 0.75
                     path_smooth[i] = alpha * smoothed + (1 - alpha) * prev[i]
-                
+
                 # Project points back to mask if they went outside
                 for i in range(1, n - 1):
                     pi = np.round(path_smooth[i]).astype(int)
                     pi = np.clip(pi, [0, 0], [mask.shape[0]-1, mask.shape[1]-1])
-                    
+
                     # If point is outside mask, find nearest valid point
                     if not mask[pi[0], pi[1]]:
                         # Search in small neighborhood for nearest valid point
@@ -1216,76 +1172,126 @@ def _compute_manual_length(seg_mask, point1, point2, spacing):
                             y_min, y_max = max(0, pi[0]-r), min(mask.shape[0], pi[0]+r+1)
                             x_min, x_max = max(0, pi[1]-r), min(mask.shape[1], pi[1]+r+1)
                             local_mask = mask[y_min:y_max, x_min:x_max]
-                            
+
                             if local_mask.any():
                                 local_coords = np.argwhere(local_mask)
                                 local_coords[:, 0] += y_min
                                 local_coords[:, 1] += x_min
-                                
+
                                 # Find nearest valid point
                                 dists = np.sum((local_coords - path_smooth[i]) ** 2, axis=1)
                                 nearest = local_coords[np.argmin(dists)]
                                 path_smooth[i] = nearest.astype(float)
                                 found = True
                                 break
-                        
+
                         if not found:
                             # Keep previous valid position
                             path_smooth[i] = prev[i]
-            
+
             # Final round to integers and clipping
             path_smooth = np.round(path_smooth).astype(int)
             path_smooth[:, 0] = np.clip(path_smooth[:, 0], 0, mask.shape[0] - 1)
             path_smooth[:, 1] = np.clip(path_smooth[:, 1], 0, mask.shape[1] - 1)
-            
+
             return path_smooth
-        
-        # Apply constrained smoothing
-        path = smooth_path_constrained(path, seg_mask_bin, dist_transform, iterations=10)
-        
-        # Remove duplicate consecutive points
-        if len(path) >= 2:
-            mask_diff = np.any(np.diff(path, axis=0) != 0, axis=1)
-            keep_indices = np.concatenate([[True], mask_diff])
-            path = path[keep_indices]
 
-        # If clicked points were outside the mask, extend path with straight-line segments
-        # from the actual clicked position to the mask boundary entry/exit point.
-        if p1_outside:
-            n_ext = max(2, int(np.ceil(np.linalg.norm(p1_anchor.astype(float) - p1_int.astype(float)))) + 1)
-            t = np.linspace(0, 1, n_ext)[:-1]  # exclude p1_int — already path[0]
-            ext = np.round(p1_anchor[None, :] * (1 - t[:, None]) + p1_int[None, :] * t[:, None]).astype(int)
-            path = np.vstack([ext, path])
+        def route_segment(pa, pb):
+            """Route a smoothed, mask-constrained path between two points."""
+            pa_int = np.clip(np.round(pa).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
+            pb_int = np.clip(np.round(pb).astype(int), [0, 0], [seg_mask_bin.shape[0]-1, seg_mask_bin.shape[1]-1])
 
-        if p2_outside:
-            n_ext = max(2, int(np.ceil(np.linalg.norm(p2_anchor.astype(float) - p2_int.astype(float)))) + 1)
-            t = np.linspace(0, 1, n_ext)[1:]  # exclude p2_int — already path[-1]
-            ext = np.round(p2_int[None, :] * (1 - t[:, None]) + p2_anchor[None, :] * t[:, None]).astype(int)
-            path = np.vstack([path, ext])
+            # Track whether clicked points were outside the mask so we can extend the path later
+            pa_outside = not seg_mask_bin[pa_int[0], pa_int[1]]
+            pb_outside = not seg_mask_bin[pb_int[0], pb_int[1]]
+            pa_anchor = pa_int.copy()  # actual clicked position (clamped to image bounds)
+            pb_anchor = pb_int.copy()
+
+            # If points are outside the mask, find nearest inside point for internal routing
+            if pa_outside or pb_outside:
+                mask_coords = np.argwhere(seg_mask_bin)
+                if len(mask_coords) > 0:
+                    from scipy.spatial.distance import cdist
+                    if pa_outside:
+                        dist_to_pa = cdist([pa], mask_coords)[0]
+                        pa_int = mask_coords[np.argmin(dist_to_pa)]
+                    if pb_outside:
+                        dist_to_pb = cdist([pb], mask_coords)[0]
+                        pb_int = mask_coords[np.argmin(dist_to_pb)]
+
+            # Find path with minimum cost through the center
+            try:
+                indices, weight = route_through_array(
+                    cost_map,
+                    start=tuple(pa_int),
+                    end=tuple(pb_int),
+                    fully_connected=True,
+                    geometric=True
+                )
+                seg_path = np.array(indices, dtype=int)
+            except Exception as e:
+                print(f"Route finding failed: {e}, using straight line")
+                n_points = int(np.ceil(np.linalg.norm(pb_int - pa_int))) + 1
+                t = np.linspace(0, 1, n_points)
+                seg_path = pa_int[None, :] * (1 - t[:, None]) + pb_int[None, :] * t[:, None]
+                seg_path = np.round(seg_path).astype(int)
+
+            if len(seg_path) < 2:
+                return np.array([pa.astype(int), pb.astype(int)], dtype=int)
+
+            # Apply constrained smoothing
+            seg_path = smooth_path_constrained(seg_path, seg_mask_bin, iterations=10)
+
+            # Remove duplicate consecutive points
+            if len(seg_path) >= 2:
+                mask_diff = np.any(np.diff(seg_path, axis=0) != 0, axis=1)
+                keep_indices = np.concatenate([[True], mask_diff])
+                seg_path = seg_path[keep_indices]
+
+            # If clicked points were outside the mask, extend path with straight-line segments
+            # from the actual clicked position to the mask boundary entry/exit point.
+            if pa_outside:
+                n_ext = max(2, int(np.ceil(np.linalg.norm(pa_anchor.astype(float) - pa_int.astype(float)))) + 1)
+                t = np.linspace(0, 1, n_ext)[:-1]  # exclude pa_int — already seg_path[0]
+                ext = np.round(pa_anchor[None, :] * (1 - t[:, None]) + pa_int[None, :] * t[:, None]).astype(int)
+                seg_path = np.vstack([ext, seg_path])
+
+            if pb_outside:
+                n_ext = max(2, int(np.ceil(np.linalg.norm(pb_anchor.astype(float) - pb_int.astype(float)))) + 1)
+                t = np.linspace(0, 1, n_ext)[1:]  # exclude pb_int — already seg_path[-1]
+                ext = np.round(pb_int[None, :] * (1 - t[:, None]) + pb_anchor[None, :] * t[:, None]).astype(int)
+                seg_path = np.vstack([seg_path, ext])
+
+            return seg_path
+
+        # Route through each consecutive pair of points (head -> waypoints -> tail),
+        # stitching the segments together without duplicating shared junction points.
+        full_segments = []
+        for i in range(len(pts) - 1):
+            seg_path = route_segment(pts[i], pts[i + 1])
+            if i > 0:
+                seg_path = seg_path[1:]
+            full_segments.append(seg_path)
+        path = np.vstack(full_segments)
 
         # Compute length along path
         pf = path.astype(float)
         dxy = np.diff(pf, axis=0)
         seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
         length = float(seg.sum())
-        
-        # Compute straight-line distance
-        diff = p2 - p1
-        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
-        
+
+        # Compute straight-line distance between the first and last point
+        straight_length = straight_dist(p1, p2)
+
         straight_line_points = (tuple(path[0]), tuple(path[-1]))
-        
+
         return length, straight_length, path, straight_line_points
-        
+
     except Exception as e:
         print(f"Error in manual length computation: {e}")
         import traceback
         traceback.print_exc()
-        # Fallback: straight line between points
-        diff = p2 - p1
-        straight_length = float(np.sqrt((diff[0] * dy) ** 2 + (diff[1] * dx) ** 2))
-        path = np.array([p1, p2], dtype=int)
-        return straight_length, straight_length, path, (tuple(p1.astype(int)), tuple(p2.astype(int)))
+        return straight_fallback()
 def _enter_manual_mode(evt: gr.SelectData, data):
     """Enter manual editing mode for selected image"""
     if data is None:
@@ -1309,16 +1315,39 @@ def _enter_manual_mode(evt: gr.SelectData, data):
     )
     
     filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
-    instructions = f"**Editing: {filename}**\n\nClick on the image to set points:\n1. First click = HEAD (start point)\n2. Second click = TAIL (end point)\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
+    instructions = f"**Editing: {filename}**\n\nClick on the image to set points:\n1. First click = HEAD (start point)\n2. Optional further clicks = midway waypoints the path must pass through\n3. Last click = TAIL (end point)\n\nAfter setting at least 2 points, click 'Apply Manual Points' to recalculate length."
     
     return display_img, idx, instructions, gr.update(visible=True)
 
 
-def _record_manual_click(evt: gr.SelectData, current_img, edit_idx, manual_points_temp):
-    """Record a click on the image for manual point selection"""
+def _draw_manual_points(base_img, points_list):
+    """Draw the current set of manual points on a clean base image.
+    Point 0 = HEAD (green), last point = TAIL (red), any points in between
+    are midway waypoints (yellow) the path must pass through."""
+    img_with_points = base_img.copy()
+    n = len(points_list)
+    for i, (py, px) in enumerate(points_list):
+        if i == 0:
+            color, label = (0, 255, 0), "HEAD"
+        elif i == n - 1:
+            color, label = (255, 0, 0), "TAIL"
+        else:
+            color, label = (255, 200, 0), f"PT {i + 1}"
+        cv2.circle(img_with_points, (int(px), int(py)), 8, color, -1)
+        cv2.circle(img_with_points, (int(px), int(py)), 10, (255, 255, 255), 2)
+        cv2.putText(img_with_points, label, (int(px) + 15, int(py) - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    return img_with_points
+
+
+def _record_manual_click(evt: gr.SelectData, current_img, edit_idx, manual_points_temp, data):
+    """Record a click on the image for manual point selection.
+    Any number of points can be placed: the first is the HEAD, the last is the
+    TAIL, and every point in between is a midway waypoint the path must pass
+    through."""
     if current_img is None or edit_idx < 0:
         return manual_points_temp, current_img, "Please select an image from the gallery first"
-    
+
     # Get click coordinates from Gradio SelectData
     # For Image component, evt.index gives (x, y) coordinates
     if hasattr(evt, 'index') and evt.index is not None:
@@ -1328,44 +1357,38 @@ def _record_manual_click(evt: gr.SelectData, current_img, edit_idx, manual_point
             return manual_points_temp, current_img, "Invalid click coordinates"
     else:
         return manual_points_temp, current_img, "No click coordinates received"
-    
+
     # Initialize manual points storage
     if manual_points_temp is None:
         manual_points_temp = {}
-    
+
     if edit_idx not in manual_points_temp:
         manual_points_temp[edit_idx] = []
-    
+
     points_list = manual_points_temp[edit_idx]
-    
-    # Add the new point (store as row, col)
-    if len(points_list) < 2:
-        points_list.append((click_y, click_x))  # Store as (row, col)
-        manual_points_temp[edit_idx] = points_list
-        
-        # Draw the points on the image
-        img_with_points = current_img.copy()
-        
-        # Draw existing points
-        for i, (py, px) in enumerate(points_list):
-            color = (0, 255, 0) if i == 0 else (255, 0, 0)  # Green for head, red for tail
-            # Draw filled circle
-            cv2.circle(img_with_points, (int(px), int(py)), 8, color, -1)
-            # Draw white border
-            cv2.circle(img_with_points, (int(px), int(py)), 10, (255, 255, 255), 2)
-            # Add label
-            label = "HEAD" if i == 0 else "TAIL"
-            cv2.putText(img_with_points, label, (int(px) + 15, int(py) - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        if len(points_list) == 1:
-            status = "✓ HEAD point set (green). Now click to set TAIL point (will be red)."
-        else:
-            status = "✓ Both points set! Click 'Apply Manual Points' to recalculate length."
-        
-        return manual_points_temp, img_with_points, status
+    points_list.append((click_y, click_x))  # Store as (row, col)
+    manual_points_temp[edit_idx] = points_list
+
+    # Redraw from a clean base image so earlier points get recolored correctly
+    # (e.g. the previous TAIL becomes a waypoint once a new point is added).
+    if data and edit_idx < len(data.get('original_images', [])):
+        base_img = _make_seg_overlay(
+            data['original_images'][edit_idx],
+            data['segmented_images'][edit_idx],
+            mask_alpha=MANUAL_MASK_ALPHA,
+        )
     else:
-        return manual_points_temp, current_img, "⚠ Both points already set. Click 'Reset Points' to start over, or 'Apply Manual Points' to use these."
+        base_img = current_img
+
+    img_with_points = _draw_manual_points(base_img, points_list)
+
+    if len(points_list) == 1:
+        status = "✓ HEAD point set (green). Click again to add a waypoint or the TAIL point (red)."
+    else:
+        status = (f"✓ {len(points_list)} points set. Keep clicking to add more midway waypoints, "
+                   "or click 'Apply Manual Points' to recalculate length using the last point as TAIL.")
+
+    return manual_points_temp, img_with_points, status
 
 
 def _reset_manual_points(edit_idx, manual_points_temp, data):
@@ -1397,58 +1420,53 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         return data, gr.update(), gr.update(), "No manual points set for this image", gr.update(), gr.update()
     
     points_list = manual_points_temp[edit_idx]
-    if len(points_list) != 2:
-        return data, gr.update(), gr.update(), "Need exactly 2 points (head and tail)", gr.update(), gr.update()
-    
+    if len(points_list) < 2:
+        return data, gr.update(), gr.update(), "Need at least 2 points (head and tail)", gr.update(), gr.update()
+
     # Get the image data
     seg_mask = data['segmented_images'][edit_idx]
     h_seg, w_seg = seg_mask.shape[:2]
-    
+
     # Convert click coordinates to mask coordinates (256x256)
     # Points are stored as (row, col) in display space
     # Need to scale to mask space
-    point1_display = points_list[0]  # (row, col) in display
-    point2_display = points_list[1]
-    
-    # Get display image size (now full resolution)
     original_img = data['original_images'][edit_idx]
     display_overlay = _make_seg_overlay(original_img, seg_mask, mask_alpha=MANUAL_MASK_ALPHA)
     h_display, w_display = display_overlay.shape[:2]
-    
+
     # Scale points from display to mask coordinates
     scale_y = h_seg / h_display
     scale_x = w_seg / w_display
-    
-    point1_mask = (int(point1_display[0] * scale_y), int(point1_display[1] * scale_x))
-    point2_mask = (int(point2_display[0] * scale_y), int(point2_display[1] * scale_x))
-    
-    # Ensure points are within bounds
-    point1_mask = (np.clip(point1_mask[0], 0, h_seg-1), np.clip(point1_mask[1], 0, w_seg-1))
-    point2_mask = (np.clip(point2_mask[0], 0, h_seg-1), np.clip(point2_mask[1], 0, w_seg-1))
-    
+
+    points_mask = []
+    for py, px in points_list:
+        row = int(np.clip(int(py * scale_y), 0, h_seg - 1))
+        col = int(np.clip(int(px * scale_x), 0, w_seg - 1))
+        points_mask.append((row, col))
+
     # Get spacing from data
     spacing = data.get('spacing', (5885.0/256, 5885.0/256))
-    
+
     # Recalculate length with manual points
     try:
         length, straight_length, path, straight_line_points = _compute_manual_length(
-            seg_mask, point1_mask, point2_mask, spacing
+            seg_mask, points_mask, spacing
         )
-        
+
         # Update data
         if 'fish_lengths' in data and edit_idx < len(data['fish_lengths']):
             data['fish_lengths'][edit_idx] = length
-        
+
         if 'ratios' in data and edit_idx < len(data['ratios']):
             if straight_length > 0:
                 data['ratios'][edit_idx] = length / straight_length
             else:
                 data['ratios'][edit_idx] = 0.0
-        
+
         # Store manual points in data for persistence
         if 'manual_points' not in data:
             data['manual_points'] = {}
-        data['manual_points'][edit_idx] = (point1_mask, point2_mask)
+        data['manual_points'][edit_idx] = points_mask
         
         # Regenerate preview for this image
         eye_mask = data.get('eyes_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('eyes_images', [])) else None
@@ -1916,17 +1934,18 @@ with gr.Blocks() as demo:
         with gr.Accordion("🔧 Manual Point Adjustment", open=False) as manual_edit_accordion:
             gr.Markdown("""
             **Use this tool to manually set head and tail points when automatic detection fails.**
-            
+
             1. Click an image in the gallery above to select it for manual editing
-            2. Click on the large image below to set HEAD (green) and TAIL (red) points
-            3. Click 'Apply Manual Points' to recalculate the length
-            
+            2. Click on the large image below to set the HEAD (green, 1st click) and TAIL (red, last click) points
+            3. Optionally click additional midway points between HEAD and TAIL (yellow) to force the path through them
+            4. Click 'Apply Manual Points' to recalculate the length
+
             **Note:** To exclude images from results, use the "Exclude images" checkboxes below.
             """)
             manual_edit_instructions = gr.Markdown("Select an image from the gallery above to begin manual editing.")
-            
+
             with gr.Row():
-                manual_edit_image = gr.Image(label="Click to set points: HEAD (1st click) → TAIL (2nd click)", type="numpy", interactive=False)
+                manual_edit_image = gr.Image(label="Click to set points: HEAD (1st click) → optional waypoints → TAIL (last click)", type="numpy", interactive=False)
             
             manual_status = gr.Markdown("")
             
@@ -2151,7 +2170,7 @@ with gr.Blocks() as demo:
                 )
                 manual_idx = idx
                 filename = data['filenames'][idx] if idx < len(data['filenames']) else f"Image {idx}"
-                manual_instr = f"**Selected: {filename}**\n\nClick on the image below to set points:\n- **First click** = HEAD (start point) - shown in GREEN\n- **Second click** = TAIL (end point) - shown in RED\n\nAfter setting both points, click 'Apply Manual Points' to recalculate length."
+                manual_instr = f"**Selected: {filename}**\n\nClick on the image below to set points:\n- **First click** = HEAD (start point) - shown in GREEN\n- **Middle clicks** = optional midway waypoints - shown in YELLOW\n- **Last click** = TAIL (end point) - shown in RED\n\nAfter setting at least 2 points, click 'Apply Manual Points' to recalculate length."
         
         return manual_img, manual_idx, manual_instr
     
@@ -2185,7 +2204,7 @@ with gr.Blocks() as demo:
     # When manual edit image is clicked, record the point
     manual_edit_image.select(
         fn=_record_manual_click,
-        inputs=[manual_edit_image, edit_image_idx, manual_points_temp],
+        inputs=[manual_edit_image, edit_image_idx, manual_points_temp, data_state],
         outputs=[manual_points_temp, manual_edit_image, manual_status]
     )
     
