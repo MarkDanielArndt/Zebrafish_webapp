@@ -152,9 +152,10 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
     Without mask_fish, falls back to plain image-axis width/height.
 
     spacing = (dy, dx) — physical units (µm) per pixel.
-    Returns {'eye_width_um': cross-body-axis extent, 'eye_height_um': along-body-axis extent}.
+    Returns {'eye_width_um': cross-body-axis extent, 'eye_height_um': along-body-axis extent,
+             'eye_width_line': ((r1,c1),(r2,c2)) or None, 'eye_height_line': ((r1,c1),(r2,c2)) or None}.
     """
-    out = {"eye_width_um": 0.0, "eye_height_um": 0.0}
+    out = {"eye_width_um": 0.0, "eye_height_um": 0.0, "eye_width_line": None, "eye_height_line": None}
     if mask_eye is None:
         return out
     m = np.asarray(mask_eye)
@@ -194,6 +195,8 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
             principal = eigvecs[:, int(np.argmax(eigvals))]
             angle = float(np.arctan2(principal[0], principal[1]))
 
+    cy_px, cx_px = float(ys.mean()), float(xs.mean())
+
     if angle is not None:
         y_phys = ys.astype(float) * dy
         x_phys = xs.astype(float) * dx
@@ -202,13 +205,29 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
         # head-tail axis, "across" is perpendicular to it.
         along  = x_phys * cos_a + y_phys * sin_a
         across = -x_phys * sin_a + y_phys * cos_a
-        out["eye_height_um"] = float(along.max() - along.min())
-        out["eye_width_um"]  = float(across.max() - across.min())
+        height_val = float(along.max() - along.min())
+        width_val  = float(across.max() - across.min())
+
+        along_dir_phys  = (sin_a, cos_a)
+        across_dir_phys = (cos_a, -sin_a)
+
+        def _half_line(direction_phys, half_len_phys):
+            return direction_phys[0] * half_len_phys / dy, direction_phys[1] * half_len_phys / dx
+
+        dh_row, dh_col = _half_line(along_dir_phys, height_val / 2.0)
+        dw_row, dw_col = _half_line(across_dir_phys, width_val / 2.0)
+
+        out["eye_height_um"] = height_val
+        out["eye_width_um"]  = width_val
+        out["eye_height_line"] = ((cy_px - dh_row, cx_px - dh_col), (cy_px + dh_row, cx_px + dh_col))
+        out["eye_width_line"]  = ((cy_px - dw_row, cx_px - dw_col), (cy_px + dw_row, cx_px + dw_col))
     else:
         width_px  = int(xs.max() - xs.min() + 1)
         height_px = int(ys.max() - ys.min() + 1)
         out["eye_width_um"]  = float(width_px * dx)
         out["eye_height_um"] = float(height_px * dy)
+        out["eye_width_line"]  = ((cy_px, float(xs.min())), (cy_px, float(xs.max())))
+        out["eye_height_line"] = ((float(ys.min()), cx_px), (float(ys.max()), cx_px))
     return out
 
 def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):

@@ -351,7 +351,7 @@ MANUAL_MASK_ALPHA = 0.15
 MAX_EDITOR_PX = 800  # max display dimension for the mask editor (memory optimisation)
 GALLERY_MAX_PX = 900  # max display dimension for gallery thumbnails (browser memory optimisation)
 
-def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, swimbladder_mask=None, swim_width_line=None, mask_alpha=GALLERY_MASK_ALPHA, draw_eye_diameters=True, max_px=None) -> np.ndarray:
+def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_points=None, eye_mask=None, edema_mask=None, swimbladder_mask=None, swim_width_line=None, eye_width_line=None, eye_height_line=None, mask_alpha=GALLERY_MASK_ALPHA, draw_eye_diameters=True, max_px=None) -> np.ndarray:
     base = _to_numpy(original_img); mask = _normalize_mask(seg_mask)
     if base.ndim == 2: base = np.stack([base]*3, axis=-1)
     if mask.shape[:2] != base.shape[:2]:
@@ -424,32 +424,18 @@ def _make_seg_overlay(original_img, seg_mask, path_points=None, straight_line_po
             cv2.line(overlay, p1, p2, (255, 0, 255), 3, lineType=cv2.LINE_AA)
         except Exception:
             pass
-    if eye_mask is not None and draw_eye_diameters:
-        try:
-            eye_norm = _normalize_mask(eye_mask)
-            if eye_norm.shape[:2] != overlay.shape[:2]:
-                eye_norm = np.array(PILImage.fromarray(eye_norm).resize(
-                    (overlay.shape[1], overlay.shape[0]), resample=PILImage.NEAREST))
-            em = eye_norm > 0
-            if em.any():
-                num, labels, stats, _ = cv2.connectedComponentsWithStats(
-                    em.astype(np.uint8), connectivity=8)
-                if num > 1:
-                    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-                    em = labels == largest
-                ys, xs = np.where(em)
-                ymin, ymax = int(ys.min()), int(ys.max())
-                xmin, xmax = int(xs.min()), int(xs.max())
-                cy = (ymin + ymax) // 2
-                cx = (xmin + xmax) // 2
-                # horizontal diameter (dark outline + green line)
-                cv2.line(overlay, (xmin, cy), (xmax, cy), (0, 0, 0), 4, lineType=cv2.LINE_AA)
-                cv2.line(overlay, (xmin, cy), (xmax, cy), (0, 255, 0), 2, lineType=cv2.LINE_AA)
-                # vertical diameter
-                cv2.line(overlay, (cx, ymin), (cx, ymax), (0, 0, 0), 4, lineType=cv2.LINE_AA)
-                cv2.line(overlay, (cx, ymin), (cx, ymax), (0, 255, 0), 2, lineType=cv2.LINE_AA)
-        except Exception:
-            pass
+    if draw_eye_diameters:
+        for line in (eye_width_line, eye_height_line):
+            if line is None:
+                continue
+            try:
+                (r1, c1), (r2, c2) = line
+                p1 = (int(np.clip(round(c1 * sx), 0, w_base - 1)), int(np.clip(round(r1 * sy), 0, h_base - 1)))
+                p2 = (int(np.clip(round(c2 * sx), 0, w_base - 1)), int(np.clip(round(r2 * sy), 0, h_base - 1)))
+                cv2.line(overlay, p1, p2, (0, 0, 0), 4, lineType=cv2.LINE_AA)
+                cv2.line(overlay, p1, p2, (0, 255, 0), 2, lineType=cv2.LINE_AA)
+            except Exception:
+                pass
 
     if swim_width_line is not None:
         try:
@@ -870,6 +856,7 @@ def process(folder,
     swim_areas, swim_widths = [], []
     paths, straight_lines = [], []  # stored per-image for gallery overlay regeneration
     swim_width_lines = []
+    eye_width_lines, eye_height_lines = [], []
     for i, seg_mask in enumerate(segmented_images):
         path_points = None
         straight_line_points = None
@@ -923,6 +910,8 @@ def process(folder,
                 if process_ratio:
                     ratios.append(None)
 
+        eye_width_line = None
+        eye_height_line = None
         if process_eye_size:
                     try:
                         eye_mask_for_metrics = (eye_mask_for_vis > 0) if eye_mask_for_vis is not None else None
@@ -935,11 +924,15 @@ def process(folder,
                         dia = compute_eye_diameters(eye_mask_for_metrics, spacing=(y_scale, x_scale), mask_fish=seg_mask_bin)
                         eye_widths.append(float(dia.get("eye_width_um", 0.0)))
                         eye_heights.append(float(dia.get("eye_height_um", 0.0)))
+                        eye_width_line = dia.get("eye_width_line")
+                        eye_height_line = dia.get("eye_height_line")
                     except Exception as e:
                         print(f"Error calculating eye metrics for image {i}: {e}")
                         eye_areas.append(None)
                         eye_widths.append(None)
                         eye_heights.append(None)
+        eye_width_lines.append(eye_width_line)
+        eye_height_lines.append(eye_height_line)
         if process_edema:
             try:
                 edema_mask_bin = (edema_mask_for_vis > 0) if edema_mask_for_vis is not None else None
@@ -987,6 +980,8 @@ def process(folder,
                 edema_mask=edema_mask_for_vis,
                 swimbladder_mask=swimbladder_mask_for_vis,
                 swim_width_line=swim_width_line,
+                eye_width_line=eye_width_line,
+                eye_height_line=eye_height_line,
                 max_px=GALLERY_MAX_PX,
             )
             original_name = filenames[i] if i < len(filenames) else f"image_{i}"
@@ -1030,6 +1025,8 @@ def process(folder,
         'edema_images': edema_images,
         'swimbladder_images': swimbladder_images,
         'swim_width_lines': swim_width_lines,
+        'eye_width_lines': eye_width_lines,
+        'eye_height_lines': eye_height_lines,
         'spacing': (y_scale, x_scale),
         'paths': paths,
         'straight_lines': straight_lines,
@@ -1500,6 +1497,8 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
         edema_mask = data.get('edema_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('edema_images', [])) else None
         swim_mask = data.get('swimbladder_images', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('swimbladder_images', [])) else None
         swim_line = data.get('swim_width_lines', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('swim_width_lines', [])) else None
+        eye_w_line = data.get('eye_width_lines', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('eye_width_lines', [])) else None
+        eye_h_line = data.get('eye_height_lines', [None]*(edit_idx+1))[edit_idx] if edit_idx < len(data.get('eye_height_lines', [])) else None
         new_overlay_gallery = _make_seg_overlay(
             original_img,
             seg_mask,
@@ -1509,6 +1508,8 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
             edema_mask=edema_mask,
             swimbladder_mask=swim_mask,
             swim_width_line=swim_line,
+            eye_width_line=eye_w_line,
+            eye_height_line=eye_h_line,
             mask_alpha=GALLERY_MASK_ALPHA,
             max_px=GALLERY_MAX_PX,
         )
@@ -1522,6 +1523,8 @@ def _apply_manual_points(edit_idx, manual_points_temp, data):
             edema_mask=edema_mask,
             swimbladder_mask=swim_mask,
             swim_width_line=swim_line,
+            eye_width_line=eye_w_line,
+            eye_height_line=eye_h_line,
             mask_alpha=MANUAL_MASK_ALPHA,
         )
         
@@ -1734,6 +1737,10 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
                 data['eye_widths'][edit_idx]  = float(dia.get('eye_width_um',  0.0))
             if edit_idx < len(data.get('eye_heights', [])):
                 data['eye_heights'][edit_idx] = float(dia.get('eye_height_um', 0.0))
+            if 'eye_width_lines' in data and edit_idx < len(data['eye_width_lines']):
+                data['eye_width_lines'][edit_idx] = dia.get('eye_width_line')
+            if 'eye_height_lines' in data and edit_idx < len(data['eye_height_lines']):
+                data['eye_height_lines'][edit_idx] = dia.get('eye_height_line')
         except Exception:
             recompute_failed = True
 
@@ -1783,11 +1790,16 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
         stored_paths    = data.get('paths',        [])
         stored_straights = data.get('straight_lines', [])
         stored_swim_lines = data.get('swim_width_lines', [])
+        stored_eye_w_lines = data.get('eye_width_lines', [])
+        stored_eye_h_lines = data.get('eye_height_lines', [])
         path_pts    = new_path_pts    if mask_type == 'Body' else (stored_paths[edit_idx]    if edit_idx < len(stored_paths)    else None)
         straight_pts = new_straight_pts if mask_type == 'Body' else (stored_straights[edit_idx] if edit_idx < len(stored_straights) else None)
         swim_line = stored_swim_lines[edit_idx] if edit_idx < len(stored_swim_lines) else None
+        eye_w_line = stored_eye_w_lines[edit_idx] if edit_idx < len(stored_eye_w_lines) else None
+        eye_h_line = stored_eye_h_lines[edit_idx] if edit_idx < len(stored_eye_h_lines) else None
         new_overlay = _make_seg_overlay(orig, seg_mask, path_pts, straight_pts, eye_mask, edm_mask,
-                                         swimbladder_mask=swim_mask, swim_width_line=swim_line, max_px=GALLERY_MAX_PX)
+                                         swimbladder_mask=swim_mask, swim_width_line=swim_line,
+                                         eye_width_line=eye_w_line, eye_height_line=eye_h_line, max_px=GALLERY_MAX_PX)
         fname = data['filenames'][edit_idx] if edit_idx < len(data.get('filenames', [])) else f"Image {edit_idx}"
         cap = f"{edit_idx}:{_shorten_name(fname, max_chars=22)}"
         if 'original_previews' in data and edit_idx < len(data['original_previews']):
