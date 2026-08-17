@@ -843,12 +843,23 @@ def process(folder,
             f"(from H={phys_h_um_user:g} µm, W={phys_w_um_user:g} µm over {model_target_size} px)"
         )
     else:
-        y_scale_info = 5885.0 / model_target_size
-        x_scale_info = 5885.0 / model_target_size
+        # No scale bar set: fall back to a 5885 µm reference width, scaling the
+        # height to match each image's actual pixel aspect ratio. A square
+        # H=W=5885 assumption would otherwise skew any fish-axis-aligned
+        # measurement (eye/swim-bladder width & height lines) on non-square
+        # images, since the model mask is always square (256x256) regardless
+        # of the original image's shape.
+        if original_images:
+            h0, w0 = original_images[0].shape[:2]
+            x_scale_info = 5885.0 / model_target_size
+            y_scale_info = x_scale_info * (h0 / w0)
+        else:
+            y_scale_info = 5885.0 / model_target_size
+            x_scale_info = 5885.0 / model_target_size
         spacing_info_md = (
             f"**Spacing used:** default calibration | "
             f"y = {y_scale_info:.4f} µm/pixel, x = {x_scale_info:.4f} µm/pixel "
-            f"(H=W=5885 µm over {model_target_size} px)"
+            f"(W=5885 µm, H scaled to match each image's aspect ratio, over {model_target_size} px)"
         )
 
     fish_lengths, curvatures, ratios, eye_areas, edema_areas, previews = [], [], [], [], [], []
@@ -866,7 +877,6 @@ def process(folder,
         seg_mask_bin = seg_mask > 0
 
         # Per-image pixel scales derived from user-provided physical distances
-        h, w = seg_mask.shape[:2]
         # Default to pixel units if user did not provide values
         if phys_w_um_user is not None and phys_h_um_user is not None:
             phys_w_um = phys_w_um_user
@@ -875,11 +885,16 @@ def process(folder,
             y_scale = phys_h_um / model_target_size  # physical units per pixel in y direction
             x_scale = phys_w_um / model_target_size  # physical units per pixel in x direction
         else:
-            # Default spacing (assuming 5885 µm per model_target_size pixels as per the original code)
-            y_scale = 5885.0 / model_target_size
+            # No scale bar set: use a 5885 µm reference width and scale the
+            # height to this image's actual pixel aspect ratio (the model
+            # mask is always square, but the source image usually isn't) so
+            # fish-axis-aligned measurement lines still render at the
+            # correct angle without requiring calibration.
+            orig_h, orig_w = original_images[i].shape[:2]
             x_scale = 5885.0 / model_target_size
+            y_scale = x_scale * (orig_h / orig_w)
             phys_w_um = 5885.0
-            phys_h_um = 5885.0
+            phys_h_um = y_scale * model_target_size
 
         if process_length:
             # Use the new tube_length_border2border function
