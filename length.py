@@ -211,15 +211,20 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
         out["eye_height_um"] = float(height_px * dy)
     return out
 
-def compute_tube_metrics(mask, spacing=(1.0, 1.0)):
+def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):
     """
-    Fit a minimum-area rotated rectangle to a tube-shaped binary mask.
+    Measure a tube-shaped structure's long-axis length and cross-axis width.
 
-    Unlike a simple bounding box, the rectangle follows the tube's actual
-    orientation, so the short side is the cross-sectional width regardless of
-    how the tube is rotated in the image (the long side is discarded — callers
-    that only care about the body length already get that from
-    tube_length_border2border).
+    If mask_fish is given, the fish body's principal axis (PCA over its
+    physical-unit pixel coordinates) defines the length/width directions.
+    This matters for small or roundish structures (e.g. the swim bladder):
+    fitting a minimum-area rectangle to their own outline is unstable and can
+    lock onto an arbitrary diagonal orientation instead of following the
+    fish's actual body axis. Without mask_fish, falls back to the mask's own
+    minAreaRect orientation (unlike a simple bounding box, that rectangle
+    follows the mask's actual orientation regardless of how it's rotated in
+    the image — callers that only care about body length already get that
+    from tube_length_border2border).
 
     spacing: (dy, dx) physical units per pixel.
 
@@ -247,6 +252,50 @@ def compute_tube_metrics(mask, spacing=(1.0, 1.0)):
         m = (labels == largest).astype(np.uint8)
 
     out["area"] = float(int(m.sum()) * dy * dx)
+
+    angle = None
+    if mask_fish is not None:
+        fm = np.asarray(mask_fish)
+        if fm.ndim == 3:
+            fm = fm[..., 0]
+        fm = fm > 0
+        if fm.any():
+            fys, fxs = np.where(fm)
+            fy_phys = fys.astype(float) * dy
+            fx_phys = fxs.astype(float) * dx
+            fy_c = fy_phys - fy_phys.mean()
+            fx_c = fx_phys - fx_phys.mean()
+            cov = np.cov(np.vstack([fy_c, fx_c]))
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            principal = eigvecs[:, int(np.argmax(eigvals))]
+            angle = float(np.arctan2(principal[0], principal[1]))
+
+    if angle is not None:
+        ys, xs = np.where(m > 0)
+        y_phys = ys.astype(float) * dy
+        x_phys = xs.astype(float) * dx
+        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        # Rotate the structure's pixels into the fish's frame: "along" tracks
+        # the head-tail axis, "across" is perpendicular to it.
+        along  = x_phys * cos_a + y_phys * sin_a
+        across = -x_phys * sin_a + y_phys * cos_a
+        length_val = float(along.max() - along.min())
+        width_val  = float(across.max() - across.min())
+
+        cy_px, cx_px = float(ys.mean()), float(xs.mean())
+        along_dir_phys  = (sin_a, cos_a)
+        across_dir_phys = (cos_a, -sin_a)
+
+        def _half_line(direction_phys, half_len_phys):
+            return direction_phys[0] * half_len_phys / dy, direction_phys[1] * half_len_phys / dx
+
+        dl_row, dl_col = _half_line(along_dir_phys, length_val / 2.0)
+        dw_row, dw_col = _half_line(across_dir_phys, width_val / 2.0)
+
+        out["length"], out["width"] = length_val, width_val
+        out["length_line"] = ((cy_px - dl_row, cx_px - dl_col), (cy_px + dl_row, cx_px + dl_col))
+        out["width_line"] = ((cy_px - dw_row, cx_px - dw_col), (cy_px + dw_row, cx_px + dw_col))
+        return out
 
     contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:

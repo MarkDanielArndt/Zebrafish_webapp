@@ -957,7 +957,7 @@ def process(folder,
         if process_swimbladder:
             try:
                 swim_mask_bin = (swimbladder_mask_for_vis > 0) if swimbladder_mask_for_vis is not None else None
-                swim_info = compute_tube_metrics(swim_mask_bin, spacing=(y_scale, x_scale))
+                swim_info = compute_tube_metrics(swim_mask_bin, spacing=(y_scale, x_scale), mask_fish=seg_mask_bin)
                 swim_areas.append(float(swim_info.get("area", 0.0)))
                 swim_widths.append(float(swim_info.get("width", 0.0)))
                 swim_width_line = swim_info.get("width_line")
@@ -1749,7 +1749,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
     if mask_type == 'Swim Bladder' and swim_mask is not None:
         try:
             swim_bin = swim_mask > 0
-            swim_info = compute_tube_metrics(swim_bin, spacing=spacing)
+            swim_info = compute_tube_metrics(swim_bin, spacing=spacing, mask_fish=seg_bin)
             if edit_idx < len(data.get('swim_areas', [])):
                 data['swim_areas'][edit_idx] = float(swim_info.get('area', 0.0))
             if edit_idx < len(data.get('swim_widths', [])):
