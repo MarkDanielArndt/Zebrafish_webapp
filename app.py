@@ -932,7 +932,7 @@ def process(folder,
                             spacing=(y_scale, x_scale),
                         )
                         eye_areas.append(float(eye_info.get("eye_area", 0.0)))
-                        dia = compute_eye_diameters(eye_mask_for_metrics, spacing=(y_scale, x_scale))
+                        dia = compute_eye_diameters(eye_mask_for_metrics, spacing=(y_scale, x_scale), mask_fish=seg_mask_bin)
                         eye_widths.append(float(dia.get("eye_width_um", 0.0)))
                         eye_heights.append(float(dia.get("eye_height_um", 0.0)))
                     except Exception as e:
@@ -1729,7 +1729,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
             eye_info = compute_eye_metrics(eye_bin, mask_fish=seg_bin, spacing=spacing)
             if edit_idx < len(data.get('eye_areas', [])):
                 data['eye_areas'][edit_idx] = float(eye_info.get('eye_area', 0.0))
-            dia = compute_eye_diameters(eye_bin, spacing=spacing)
+            dia = compute_eye_diameters(eye_bin, spacing=spacing, mask_fish=seg_bin)
             if edit_idx < len(data.get('eye_widths', [])):
                 data['eye_widths'][edit_idx]  = float(dia.get('eye_width_um',  0.0))
             if edit_idx < len(data.get('eye_heights', [])):

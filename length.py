@@ -142,11 +142,17 @@ def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0)):
         "eye_diameter_points": eye_diameter_points,
     }
 
-def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0)):
+def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
     """
-    Measure the horizontal and vertical diameters of the eye from the binary mask.
+    Measure the eye's extent along and across the fish's own body axis.
+
+    If mask_fish is given, the fish body's principal axis (from PCA over its
+    physical-unit pixel coordinates) defines the measurement frame, so the
+    result doesn't change just because the fish is rotated in the image.
+    Without mask_fish, falls back to plain image-axis width/height.
+
     spacing = (dy, dx) — physical units (µm) per pixel.
-    Returns {‘eye_width_um’: horizontal diameter, ‘eye_height_um’: vertical diameter}.
+    Returns {'eye_width_um': cross-body-axis extent, 'eye_height_um': along-body-axis extent}.
     """
     out = {"eye_width_um": 0.0, "eye_height_um": 0.0}
     if mask_eye is None:
@@ -170,10 +176,39 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0)):
         pass
 
     ys, xs = np.where(m)
-    width_px  = int(xs.max() - xs.min() + 1)   
-    height_px = int(ys.max() - ys.min() + 1)   
-    out["eye_width_um"]  = float(width_px * dx)
-    out["eye_height_um"] = float(height_px * dy)
+
+    angle = None
+    if mask_fish is not None:
+        fm = np.asarray(mask_fish)
+        if fm.ndim == 3:
+            fm = fm[..., 0]
+        fm = fm > 0
+        if fm.any():
+            fys, fxs = np.where(fm)
+            fy_phys = fys.astype(float) * dy
+            fx_phys = fxs.astype(float) * dx
+            fy_c = fy_phys - fy_phys.mean()
+            fx_c = fx_phys - fx_phys.mean()
+            cov = np.cov(np.vstack([fy_c, fx_c]))
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            principal = eigvecs[:, int(np.argmax(eigvals))]
+            angle = float(np.arctan2(principal[0], principal[1]))
+
+    if angle is not None:
+        y_phys = ys.astype(float) * dy
+        x_phys = xs.astype(float) * dx
+        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        # Rotate eye pixels into the fish's frame: "along" tracks the
+        # head-tail axis, "across" is perpendicular to it.
+        along  = x_phys * cos_a + y_phys * sin_a
+        across = -x_phys * sin_a + y_phys * cos_a
+        out["eye_height_um"] = float(along.max() - along.min())
+        out["eye_width_um"]  = float(across.max() - across.min())
+    else:
+        width_px  = int(xs.max() - xs.min() + 1)
+        height_px = int(ys.max() - ys.min() + 1)
+        out["eye_width_um"]  = float(width_px * dx)
+        out["eye_height_um"] = float(height_px * dy)
     return out
 
 def compute_tube_metrics(mask, spacing=(1.0, 1.0)):
@@ -258,7 +293,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     return_skeleton: return a bool image with only the centerline path
     return_straight_line: return the two endpoints of the longest straight line
     return_extensions: return boolean array indicating which path points are extensions
-    mask_eye: optional 2D binary eye mask; if provided, path starts at the fish border pixel closest to eye mask
+    mask_eye: optional 2D binary eye mask; if provided, used only to orient the path so it starts at the head end (nearer the eye)
     return_eye_info: return eye-derived diagnostics computed inside this function
     
     Returns:
@@ -278,7 +313,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     eye_diameter = 0.0
     eye_area = 0.0
     eye_diameter_points = None
-    bridge_len_override = None
     if mask.sum() == 0:
         out = (0.0, 0.0,)
         if return_path: out += (np.zeros((0, 2), dtype=int),)
@@ -526,7 +560,14 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         path = path[keep_indices]
         extension_mask = extension_mask[keep_indices]
 
-    # --- optional: force start point to be the border pixel closest to eye mask ---
+    # --- optional: use the eye mask only to orient the path (head-first) ---
+    # The branch-free path above already reaches the mask boundary correctly at
+    # both ends via the raycast extension, so the eye is used purely to label
+    # which end is the head — never to relocate a point. (An earlier version
+    # snapped the head point to "the boundary pixel closest to the eye", which
+    # lands mid-head rather than at the snout tip and systematically
+    # undershot true length; see local_testing/length_v3.py for the
+    # evaluation that motivated this simplification.)
     if mask_eye is not None and len(path) >= 2:
         eye_metrics = compute_eye_metrics(mask_eye, mask_fish=mask, spacing=spacing)
         eye_mask = eye_metrics["eye_mask"]
@@ -544,132 +585,17 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
 
             if len(ecoords) > 0:
                 eye_centroid = ecoords.mean(axis=0)
-                # Closest fish-border pixel to the eye mask
+                # Closest fish-border pixel to the eye mask (kept for eye_info diagnostics only)
                 dist_be = cdist(bcoords.astype(float), ecoords.astype(float))
                 closest_border = bcoords[np.argmin(dist_be.min(axis=1))].astype(int)
                 closest_border_to_eye = closest_border
 
-                # Orient path so the nearer endpoint is at the start
-                d0 = np.linalg.norm(path[0].astype(float) - closest_border.astype(float))
-                d1 = np.linalg.norm(path[-1].astype(float) - closest_border.astype(float))
+                # Orient path so the head end (nearer the eye centroid) is at the start.
+                d0 = np.linalg.norm(path[0].astype(float) - eye_centroid)
+                d1 = np.linalg.norm(path[-1].astype(float) - eye_centroid)
                 if d1 < d0:
                     path = path[::-1]
                     extension_mask = extension_mask[::-1]
-
-                # Remove anchor "swerve": trim to nearest existing path point,
-                # then reconnect to the eye anchor with a smooth C1 bridge.
-                if len(path) >= 2:
-                    d_path = np.linalg.norm(path.astype(float) - closest_border.astype(float), axis=1)
-                    idx_near = int(np.argmin(d_path))
-
-                    # If nearest point ended up near path tail, flip once and recompute
-                    if idx_near > (len(path) // 2):
-                        path = path[::-1]
-                        extension_mask = extension_mask[::-1]
-                        d_path = np.linalg.norm(path.astype(float) - closest_border.astype(float), axis=1)
-                        idx_near = int(np.argmin(d_path))
-
-                    # Trim early detour points and start from nearest centerline location
-                    if idx_near > 0:
-                        path = path[idx_near:]
-                        extension_mask = extension_mask[idx_near:]
-
-                    # Further trim an early section, then reconnect with a smooth
-                    # cubic Hermite bridge that matches the centerline tangent at join.
-                    n_trim_start = min(52, len(path) - 2) if len(path) > 30 else 0
-                    if n_trim_start > 0:
-                        kept = path[n_trim_start:]
-                        kept_ext = extension_mask[n_trim_start:]
-                    else:
-                        kept = path.copy()
-                        kept_ext = extension_mask.copy()
-
-                    anchor = closest_border.astype(float)
-                    join = kept[0].astype(float)
-                    chord = join - anchor
-                    d01 = np.linalg.norm(chord)
-
-                    if d01 > 1e-6:
-                        # Start tangent points from anchor toward join.
-                        t0 = chord / (d01 + 1e-9)
-
-                        # End tangent follows local centerline direction at join.
-                        look_ahead = min(len(kept) - 1, 6)
-                        t1_vec = kept[look_ahead].astype(float) - join
-                        t1_norm = np.linalg.norm(t1_vec)
-                        if t1_norm < 1e-6:
-                            t1_vec = chord
-                            t1_norm = d01
-                        t1 = t1_vec / (t1_norm + 1e-9)
-
-                        tangent_scale = 0.55 * d01
-                        m0 = t0 * tangent_scale
-                        m1 = t1 * tangent_scale
-
-                        n_bridge = int(np.clip(np.ceil(d01 / 1.2), 8, 30))
-                        t = np.linspace(0.0, 1.0, n_bridge + 1)
-                        h00 = 2 * t**3 - 3 * t**2 + 1
-                        h10 = t**3 - 2 * t**2 + t
-                        h01 = -2 * t**3 + 3 * t**2
-                        h11 = t**3 - t**2
-                        bridge_f = (
-                            h00[:, None] * anchor[None, :]
-                            + h10[:, None] * m0[None, :]
-                            + h01[:, None] * join[None, :]
-                            + h11[:, None] * m1[None, :]
-                        )
-
-                        # Keep a sub-pixel bridge length for accurate final length
-                        if len(bridge_f) >= 2:
-                            dy_b, dx_b = spacing
-                            db = np.diff(bridge_f, axis=0)
-                            bridge_len_override = float(np.sqrt((db[:, 0] * dy_b) ** 2 + (db[:, 1] * dx_b) ** 2).sum())
-
-                        # Gentle local smoothing to suppress discretization corners.
-                        if len(bridge_f) > 4:
-                            for _ in range(3):
-                                prev = bridge_f.copy()
-                                bridge_f[1:-1] = 0.25 * prev[:-2] + 0.5 * prev[1:-1] + 0.25 * prev[2:]
-
-                        bridge = np.round(bridge_f).astype(int)
-                        bridge[:, 0] = np.clip(bridge[:, 0], 0, mask.shape[0] - 1)
-                        bridge[:, 1] = np.clip(bridge[:, 1], 0, mask.shape[1] - 1)
-
-                        path = np.vstack([bridge, kept[1:]]) if len(kept) > 1 else bridge
-                        extension_mask = (
-                            np.concatenate([
-                                np.ones(len(bridge), dtype=bool),
-                                kept_ext[1:]
-                            ])
-                            if len(kept_ext) > 1
-                            else np.ones(len(bridge), dtype=bool)
-                        )
-
-                    # Enforce first point as exact anchor and smooth early path slightly.
-                    path[0] = closest_border
-                    extension_mask[0] = True
-                    if len(path) >= 6:
-                        smooth_end = min(len(path) - 2, 24)
-                        if smooth_end >= 2:
-                            pf = path.astype(float)
-                            for _ in range(2):
-                                prev = pf.copy()
-                                pf[1:smooth_end + 1] = (
-                                    0.2 * prev[0:smooth_end]
-                                    + 0.6 * prev[1:smooth_end + 1]
-                                    + 0.2 * prev[2:smooth_end + 2]
-                                )
-                            pf[0] = closest_border.astype(float)
-                            path[:smooth_end + 1] = np.round(pf[:smooth_end + 1]).astype(int)
-                            path[:, 0] = np.clip(path[:, 0], 0, mask.shape[0] - 1)
-                            path[:, 1] = np.clip(path[:, 1], 0, mask.shape[1] - 1)
-
-                    # Remove duplicate consecutive points that can arise after snapping
-                    if len(path) >= 2:
-                        mask_diff2 = np.any(np.diff(path, axis=0) != 0, axis=1)
-                        keep_indices2 = np.concatenate([[True], mask_diff2])
-                        path = path[keep_indices2]
-                        extension_mask = extension_mask[keep_indices2]
 
     # --- compute physical length along the (branch-free) path ---
     dy, dx = spacing
@@ -677,16 +603,6 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     dxy = np.diff(pf, axis=0)
     seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
     length = float(seg.sum())
-
-    # If a Hermite bridge was used, compensate discretization loss from rounding.
-    if bridge_len_override is not None and len(path) >= 2 and len(extension_mask) == len(path):
-        non_ext = np.where(~extension_mask)[0]
-        bridge_end_idx = int(non_ext[0]) if len(non_ext) > 0 else len(path) - 1
-        if bridge_end_idx >= 1:
-            pb = path[:bridge_end_idx + 1].astype(float)
-            db_pix = np.diff(pb, axis=0)
-            bridge_len_discrete = float(np.sqrt((db_pix[:, 0] * dy) ** 2 + (db_pix[:, 1] * dx) ** 2).sum())
-            length += (bridge_len_override - bridge_len_discrete)
 
     # --- compute straight-line distance between start and end points of path ---
     straight_line_points = None
