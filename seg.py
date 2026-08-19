@@ -3,12 +3,12 @@ import os
 import cv2
 import numpy as np
 import torch
-from segmentation_models_pytorch import Unet, FPN
+from segmentation_models_pytorch import Unet, FPN, Segformer
 from huggingface_hub import hf_hub_download
 
 _UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name, model_type)
 
-_MODEL_TYPES = {"Unet": Unet, "FPN": FPN}
+_MODEL_TYPES = {"Unet": Unet, "FPN": FPN, "Segformer": Segformer}
 
 def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16", model_type="Unet"):
     """
@@ -63,23 +63,26 @@ def segmentation_pipeline(
     body_repo_id="markdanielarndt/Zebrafish_Segmentation",
     body_model_filename="best_model_body_3400_vgg19.pth",
     body_encoder_name="vgg19",
+    body_model_type="Unet",
     body_revision="main",
     body_force_download=False,
     eye_model_path=None,
     eye_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    eye_model_filename="best_model_eye_3400.pth",
-    eye_encoder_name="vgg16",
+    eye_model_filename="best_model_eye_256_segformer_mit_b3.pth",
+    eye_encoder_name="mit_b3",
+    eye_model_type="Segformer",
     include_edema=False,
     edema_model_path=None,
     edema_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    edema_model_filename="best_model_edema_3400_focal.pth",
-    edema_encoder_name="vgg19",
+    edema_model_filename="best_model_edema_256_segformer_mit_b3.pth",
+    edema_encoder_name="mit_b3",
+    edema_model_type="Segformer",
     include_swimbladder=False,
     swimbladder_model_path=None,
     swimbladder_repo_id="markdanielarndt/Zebrafish_Segmentation",
-    swimbladder_model_filename="best_model_swimmbladder_256_09072026.pth",
-    swimbladder_encoder_name="vgg16",
-    swimbladder_model_type="Unet",
+    swimbladder_model_filename="best_model_swimmbladder_256_segformer_mit_b3.pth",
+    swimbladder_encoder_name="mit_b3",
+    swimbladder_model_type="Segformer",
 ):
     """
     Perform body segmentation on all images in the specified folder or file list.
@@ -124,6 +127,7 @@ def segmentation_pipeline(
         revision=body_revision,
         force_download=body_force_download,
         encoder_name=body_encoder_name,
+        model_type=body_model_type,
     )
 
     if loaded_model is None:
@@ -138,6 +142,7 @@ def segmentation_pipeline(
             filename=eye_model_filename,
             label="eye model",
             encoder_name=eye_encoder_name,
+            model_type=eye_model_type,
         )
         if eyes_model is None:
             print(f"WARNING: Eye model unavailable at {eye_repo_id}/{eye_model_filename}. Returning empty eye masks.")
@@ -153,6 +158,7 @@ def segmentation_pipeline(
             filename=edema_model_filename,
             label="edema model",
             encoder_name=edema_encoder_name,
+            model_type=edema_model_type,
         )
         if edema_model is None:
             print(f"WARNING: Edema model unavailable at {edema_repo_id}/{edema_model_filename}. Returning empty edema masks.")

@@ -29,14 +29,35 @@ except Exception:
 
 MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 
-# Registry of available segmentation models
-# Each entry: display name -> (body_hf_filename, body_encoder_name, eye_hf_filename, target_size, edema_hf_filename,
-#                               swimbladder_hf_filename, swimbladder_encoder_name, swimbladder_model_type)
-# None for eye/edema/swimbladder filenames means use the pipeline default
+# Registry of available segmentation models.
+# Each entry: display name -> {target_size, body/eye/edema/swimbladder: (hf_filename, encoder_name, model_type)}
+# None for eye/edema/swimbladder means "use the pipeline default" (the 256px SegFormer models).
+# Body/eye/edema are SegFormer (mit_b3) transformer models trained by
+# Transformer_Segmentation_train.py, except:
+#   - swim bladder at 512px has no transformer checkpoint yet (still training), so
+#     Complex & Slower keeps the CNN swim bladder model until that finishes.
 SEG_MODEL_OPTIONS = {
-    "Fast & Easy (256 px, ~2s/image)": ("best_model_body_3400_vgg19.pth", "vgg19", None, 256, None, None, None, None),
-    "Complex & Slower (512 px, ~7s/image)": ("best_model_body_512.pth", "vgg19", "best_model_eye_512.pth", 512, None, "best_model_swimmbladder_512_09072026.pth", "vgg19", "FPN"),
-    "Fine-tuned DESY": ("desy_body_512_finetuned.pth", "vgg19", "desy_eye_512_finetuned.pth", 512, "desy_edema_512_finetuned.pth", "desy_swimmbladder_512_finetuned.pth", "vgg19", "FPN"),
+    "Fast & Easy (256 px, ~2s/image)": {
+        "target_size": 256,
+        "body": ("best_model_body_256_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "eye": None,
+        "edema": None,
+        "swimbladder": None,
+    },
+    "Complex & Slower (512 px, ~7s/image)": {
+        "target_size": 512,
+        "body": ("best_model_body_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "eye": ("best_model_eye_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "edema": ("best_model_edema_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "swimbladder": ("best_model_swimmbladder_512_09072026.pth", "vgg19", "FPN"),
+    },
+    "Fine-tuned DESY": {
+        "target_size": 512,
+        "body": ("desy_body_512_finetuned.pth", "vgg19", "Unet"),
+        "eye": ("desy_eye_512_finetuned.pth", "vgg16", "Unet"),
+        "edema": ("desy_edema_512_finetuned.pth", "vgg19", "Unet"),
+        "swimbladder": ("desy_swimmbladder_512_finetuned.pth", "vgg19", "FPN"),
+    },
 }
 
 def _ensure_model():
@@ -789,18 +810,34 @@ def process(folder,
     # Resolve chosen segmentation model (fine-tuned DESY checkbox overrides the preset radio)
     if use_finetuned_desy:
         seg_model_choice = "Fine-tuned DESY"
-    (seg_filename, seg_encoder, eye_filename, model_target_size, edema_filename,
-     swimbladder_filename, swimbladder_encoder, swimbladder_model_type) = SEG_MODEL_OPTIONS.get(
-        seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px, ~2s/image)"]
-    )
-    # Build kwargs for eye/edema/swimbladder models (use pipeline defaults when filename is None)
-    eye_kwargs = {} if eye_filename is None else {"eye_model_filename": eye_filename}
-    edema_kwargs = {} if edema_filename is None else {"edema_model_filename": edema_filename}
-    swimbladder_kwargs = {} if swimbladder_filename is None else {
-        "swimbladder_model_filename": swimbladder_filename,
-        "swimbladder_encoder_name": swimbladder_encoder,
-        "swimbladder_model_type": swimbladder_model_type,
-    }
+    cfg = SEG_MODEL_OPTIONS.get(seg_model_choice, SEG_MODEL_OPTIONS["Fast & Easy (256 px, ~2s/image)"])
+    model_target_size = cfg["target_size"]
+    seg_filename, seg_encoder, seg_model_type = cfg["body"]
+    # Build kwargs for eye/edema/swimbladder models (use pipeline defaults when the entry is None)
+    eye_kwargs = {}
+    if cfg["eye"] is not None:
+        eye_filename, eye_encoder, eye_model_type = cfg["eye"]
+        eye_kwargs = {
+            "eye_model_filename": eye_filename,
+            "eye_encoder_name": eye_encoder,
+            "eye_model_type": eye_model_type,
+        }
+    edema_kwargs = {}
+    if cfg["edema"] is not None:
+        edema_filename, edema_encoder, edema_model_type = cfg["edema"]
+        edema_kwargs = {
+            "edema_model_filename": edema_filename,
+            "edema_encoder_name": edema_encoder,
+            "edema_model_type": edema_model_type,
+        }
+    swimbladder_kwargs = {}
+    if cfg["swimbladder"] is not None:
+        swimbladder_filename, swimbladder_encoder, swimbladder_model_type = cfg["swimbladder"]
+        swimbladder_kwargs = {
+            "swimbladder_model_filename": swimbladder_filename,
+            "swimbladder_encoder_name": swimbladder_encoder,
+            "swimbladder_model_type": swimbladder_model_type,
+        }
     # Pass sorted file paths so segmentation results match the sorted filenames list
     file_paths_sorted = [os.path.join(work_dir, fn) for fn in filenames]
     # Always load eyes for overlay visualization; load edema/swim bladder if requested
@@ -811,6 +848,7 @@ def process(folder,
             include_eyes=True,
             body_model_filename=seg_filename,
             body_encoder_name=seg_encoder,
+            body_model_type=seg_model_type,
             **eye_kwargs,
         )
         if process_edema:
