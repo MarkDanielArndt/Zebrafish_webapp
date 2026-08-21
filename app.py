@@ -32,10 +32,8 @@ MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 # Registry of available segmentation models.
 # Each entry: display name -> {target_size, body/eye/edema/swimbladder: (hf_filename, encoder_name, model_type)}
 # None for eye/edema/swimbladder means "use the pipeline default" (the 256px SegFormer models).
-# Body/eye/edema are SegFormer (mit_b3) transformer models trained by
-# Transformer_Segmentation_train.py, except:
-#   - swim bladder at 512px has no transformer checkpoint yet (still training), so
-#     Complex & Slower keeps the CNN swim bladder model until that finishes.
+# Body/eye/edema/swimbladder are all SegFormer (mit_b3) transformer models trained by
+# Transformer_Segmentation_train.py, except the Fine-tuned DESY preset, which is untouched.
 SEG_MODEL_OPTIONS = {
     "Fast & Easy (256 px, ~2s/image)": {
         "target_size": 256,
@@ -49,7 +47,7 @@ SEG_MODEL_OPTIONS = {
         "body": ("best_model_body_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
         "eye": ("best_model_eye_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
         "edema": ("best_model_edema_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
-        "swimbladder": ("best_model_swimmbladder_512_09072026.pth", "vgg19", "FPN"),
+        "swimbladder": ("best_model_swimmbladder_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
     },
     "Fine-tuned DESY": {
         "target_size": 512,
