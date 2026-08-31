@@ -49,6 +49,13 @@ SEG_MODEL_OPTIONS = {
         "edema": ("best_model_edema_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
         "swimbladder": ("best_model_swimmbladder_512_segformer_mit_b3.pth", "mit_b3", "Segformer"),
     },
+    "Most Accurate (1024 px, ~35s/image)": {
+        "target_size": 1024,
+        "body": ("best_model_body_1024_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "eye": ("best_model_eye_1024_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "edema": ("best_model_edema_1024_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+        "swimbladder": ("best_model_swimmbladder_1024_segformer_mit_b3.pth", "mit_b3", "Segformer"),
+    },
     "Fine-tuned DESY": {
         "target_size": 512,
         "body": ("desy_body_512_finetuned.pth", "vgg19", "Unet"),
@@ -1895,10 +1902,15 @@ with gr.Blocks() as demo:
         gr.Markdown(
             "Select the body segmentation model to use. "
             "**Fast & Easy** is quicker but less accurate. "
-            "**Complex & Slower** takes longer but is more accurate."
+            "**Complex & Slower** takes longer but is more accurate. "
+            "**Most Accurate** is slowest but highest resolution."
         )
         model_choice = gr.Radio(
-            choices=["Fast & Easy (256 px, ~2s/image)", "Complex & Slower (512 px, ~7s/image)"],
+            choices=[
+                "Fast & Easy (256 px, ~2s/image)",
+                "Complex & Slower (512 px, ~7s/image)",
+                "Most Accurate (1024 px, ~35s/image)",
+            ],
             value="Fast & Easy (256 px, ~2s/image)",
             label="Model",
         )
