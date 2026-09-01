@@ -8,11 +8,11 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from skimage import measure
-from scipy.ndimage import binary_erosion, convolve, distance_transform_edt
+from scipy.ndimage import binary_erosion, convolve, distance_transform_edt, gaussian_filter
 from scipy.spatial.distance import cdist
 from scipy.spatial import cKDTree
 from skimage.morphology import medial_axis
-from skimage.graph import MCP_Geometric
+from skimage.graph import MCP_Geometric, route_through_array
 import torch.nn as nn
 import timm
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -351,6 +351,110 @@ def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):
     return out
 
 
+def _raycast_from_point(start, dir_vec, mask, btree, bcoords, step_size=0.5):
+    """
+    Cast a ray from `start` in `dir_vec`'s direction until it exits `mask`,
+    then snap to the nearest boundary pixel (bcoords/btree). Returns None if
+    dir_vec has no length.
+    """
+    dir_norm = np.linalg.norm(dir_vec)
+    if dir_norm < 1e-6:
+        return None
+    direction = dir_vec / dir_norm
+    current = np.array(start, dtype=float)
+    max_steps = int(max(mask.shape) * 2 / step_size)
+    for _ in range(max_steps):
+        nxt = current + direction * step_size
+        r, c = int(round(nxt[0])), int(round(nxt[1]))
+        if r < 0 or r >= mask.shape[0] or c < 0 or c >= mask.shape[1]:
+            break
+        if not mask[r, c]:
+            break
+        current = nxt
+    _, idx = btree.query(current, k=1)
+    return bcoords[idx].astype(float)
+
+
+def _route_centered_path(mask, p1, p2, iterations=10):
+    """
+    Route a path between two in-mask points that stays in the center of the
+    mask (weighted by distance-from-boundary), then smooth it while keeping
+    every point inside the mask. Same algorithm the webapp's manual
+    correction feature uses (app.py::_compute_manual_length), applied here
+    between algorithm-chosen endpoints instead of clicked ones. Building a
+    fresh centered path instead of bridging onto a stale skeleton fragment
+    avoids paths that hug the mask boundary or kink sharply near a
+    relocated endpoint.
+    """
+    dist_transform = distance_transform_edt(mask)
+    if dist_transform.max() == 0:
+        return np.array([p1, p2], dtype=int)
+
+    max_dist = dist_transform.max()
+    cost_map = np.where(mask, max_dist - dist_transform + 0.1, 1e10)
+    cost_map = gaussian_filter(cost_map, sigma=2.0)
+
+    p1_int = np.clip(np.round(p1).astype(int), [0, 0], [mask.shape[0] - 1, mask.shape[1] - 1])
+    p2_int = np.clip(np.round(p2).astype(int), [0, 0], [mask.shape[0] - 1, mask.shape[1] - 1])
+
+    try:
+        indices, _weight = route_through_array(
+            cost_map, start=tuple(p1_int), end=tuple(p2_int),
+            fully_connected=True, geometric=True,
+        )
+        path = np.array(indices, dtype=int)
+    except Exception:
+        n_points = int(np.ceil(np.linalg.norm(p2_int - p1_int))) + 1
+        t = np.linspace(0, 1, n_points)
+        path = p1_int[None, :] * (1 - t[:, None]) + p2_int[None, :] * t[:, None]
+        return np.round(path).astype(int)
+
+    if len(path) < 5:
+        return path
+
+    path_smooth = path.astype(float).copy()
+    n = len(path)
+    for _ in range(iterations):
+        prev = path_smooth.copy()
+        for i in range(1, n - 1):
+            half_w = 3
+            start_idx = max(0, i - half_w)
+            end_idx = min(n, i + half_w + 1)
+            idxs = np.arange(start_idx, end_idx)
+            weights = np.exp(-0.5 * ((idxs - i) / 2.5) ** 2)
+            weights /= weights.sum()
+            local_points = prev[start_idx:end_idx]
+            smoothed = (weights[:, None] * local_points).sum(axis=0)
+            path_smooth[i] = 0.75 * smoothed + 0.25 * prev[i]
+        for i in range(1, n - 1):
+            pi = np.round(path_smooth[i]).astype(int)
+            pi = np.clip(pi, [0, 0], [mask.shape[0] - 1, mask.shape[1] - 1])
+            if not mask[pi[0], pi[1]]:
+                found = False
+                for r in range(1, 6):
+                    y_min, y_max = max(0, pi[0] - r), min(mask.shape[0], pi[0] + r + 1)
+                    x_min, x_max = max(0, pi[1] - r), min(mask.shape[1], pi[1] + r + 1)
+                    local_mask = mask[y_min:y_max, x_min:x_max]
+                    if local_mask.any():
+                        local_coords = np.argwhere(local_mask)
+                        local_coords[:, 0] += y_min
+                        local_coords[:, 1] += x_min
+                        dists = np.sum((local_coords - path_smooth[i]) ** 2, axis=1)
+                        path_smooth[i] = local_coords[np.argmin(dists)].astype(float)
+                        found = True
+                        break
+                if not found:
+                    path_smooth[i] = prev[i]
+
+    path_smooth = np.round(path_smooth).astype(int)
+    path_smooth[:, 0] = np.clip(path_smooth[:, 0], 0, mask.shape[0] - 1)
+    path_smooth[:, 1] = np.clip(path_smooth[:, 1], 0, mask.shape[1] - 1)
+
+    mask_diff = np.any(np.diff(path_smooth, axis=0) != 0, axis=1)
+    keep = np.concatenate([[True], mask_diff])
+    return path_smooth[keep]
+
+
 def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False, mask_eye=None, return_eye_info=False):
     """
     Border-to-border, branch-free centerline length for a tube-like binary mask.
@@ -628,14 +732,23 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
         path = path[keep_indices]
         extension_mask = extension_mask[keep_indices]
 
-    # --- optional: use the eye mask only to orient the path (head-first) ---
-    # The branch-free path above already reaches the mask boundary correctly at
-    # both ends via the raycast extension, so the eye is used purely to label
-    # which end is the head — never to relocate a point. (An earlier version
-    # snapped the head point to "the boundary pixel closest to the eye", which
-    # lands mid-head rather than at the snout tip and systematically
-    # undershot true length; see local_testing/length_v3.py for the
-    # evaluation that motivated this simplification.)
+    # --- optional: use the eye to find a better head point, then route a fresh,
+    # mask-centered path between head and tail ---
+    # The branch-free path above already reaches the mask boundary reasonably at
+    # both ends via the raycast extension, and its tail-side endpoint is trusted
+    # as-is. But the medial-axis skeleton can badly under-reach the true snout tip
+    # under some segmentation models (see local_testing/length_v3.py and v4.py's
+    # evaluation). Casting a ray from the eye centroid, forward along the
+    # tail->eye axis, to the mask boundary finds the snout tip far more reliably
+    # -- but only trusted when it disagrees with the generic estimate by more
+    # than a small margin; pixel-noise-level "improvements" turned out to hurt
+    # more than help (see local_testing/length_v6.py through v8.py). Once the
+    # head and tail points are set, the path between them is thrown away
+    # entirely and replaced with a freshly-routed, mask-centered path -- bridging
+    # onto the old skeleton fragment with a straight line produced a path that
+    # hugged the mask boundary and kinked sharply into the relocated endpoint;
+    # see local_testing/length_v9.py for the before/after.
+    HEAD_SWITCH_MARGIN_FACTOR = 0.2  # eye-diameters; calibrated in local_testing/length_v6.py
     if mask_eye is not None and len(path) >= 2:
         eye_metrics = compute_eye_metrics(mask_eye, mask_fish=mask, spacing=spacing)
         eye_mask = eye_metrics["eye_mask"]
@@ -652,18 +765,38 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
                 ecoords = np.argwhere(eye_mask)
 
             if len(ecoords) > 0:
-                eye_centroid = ecoords.mean(axis=0)
                 # Closest fish-border pixel to the eye mask (kept for eye_info diagnostics only)
                 dist_be = cdist(bcoords.astype(float), ecoords.astype(float))
-                closest_border = bcoords[np.argmin(dist_be.min(axis=1))].astype(int)
-                closest_border_to_eye = closest_border
+                closest_border_to_eye = bcoords[np.argmin(dist_be.min(axis=1))].astype(int)
 
-                # Orient path so the head end (nearer the eye centroid) is at the start.
-                d0 = np.linalg.norm(path[0].astype(float) - eye_centroid)
-                d1 = np.linalg.norm(path[-1].astype(float) - eye_centroid)
+                # Pixel-space centroid/diameter for the geometry below (eye_centroid
+                # above is unscaled already; eye_diameter above is in physical units).
+                eye_centroid_px = ecoords.mean(axis=0).astype(float)
+                dy_px, dx_px = spacing
+                eye_diameter_px = eye_diameter / max((dy_px + dx_px) / 2.0, 1e-9)
+
+                # Orient path so the head end (nearer the eye) is at the start.
+                d0 = np.linalg.norm(path[0].astype(float) - eye_centroid_px)
+                d1 = np.linalg.norm(path[-1].astype(float) - eye_centroid_px)
                 if d1 < d0:
                     path = path[::-1]
                     extension_mask = extension_mask[::-1]
+                generic_head = path[0].astype(float)
+                tail_anchor = path[-1].astype(float)
+
+                head_point = generic_head
+                if eye_diameter_px > 0:
+                    ray_point = _raycast_from_point(eye_centroid_px, eye_centroid_px - tail_anchor, mask, btree, bcoords)
+                    if ray_point is not None:
+                        ray_dist = np.linalg.norm(ray_point - tail_anchor)
+                        generic_dist = np.linalg.norm(generic_head - tail_anchor)
+                        if ray_dist > generic_dist + HEAD_SWITCH_MARGIN_FACTOR * eye_diameter_px:
+                            head_point = ray_point
+
+                new_path = _route_centered_path(mask, head_point, tail_anchor)
+                if new_path is not None and len(new_path) >= 2:
+                    path = new_path
+                    extension_mask = np.zeros(len(path), dtype=bool)
 
     # --- compute physical length along the (branch-free) path ---
     dy, dx = spacing
