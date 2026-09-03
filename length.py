@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 from skimage import measure
-from scipy.ndimage import binary_erosion, convolve, distance_transform_edt, gaussian_filter
+from scipy.ndimage import binary_erosion, convolve, distance_transform_edt, gaussian_filter, gaussian_filter1d
 from scipy.spatial.distance import cdist
 from scipy.spatial import cKDTree
 from skimage.morphology import medial_axis
@@ -455,7 +455,31 @@ def _route_centered_path(mask, p1, p2, iterations=10):
     return path_smooth[keep]
 
 
-def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False, mask_eye=None, return_eye_info=False):
+def _smooth_path_pinned(path, sigma):
+    """
+    Gaussian-smooth a path's (row, col) coordinates to remove pixel-grid
+    staircase noise from the length sum, while pinning the first and last
+    points exactly so the path's endpoints (and straight_length, which is
+    computed from those same endpoints) never move.
+
+    Without this, tube_length_border2border's raw integer-pixel path
+    systematically over-measures length by a few percent even for a visibly
+    straight fish, because rounding the routed/skeleton path to the pixel
+    grid reintroduces small zigzags that light smoothing removes (see
+    local_testing/results_dark_background_scalebar/smoothing_sigma_test.csv).
+    """
+    if sigma is None or sigma <= 0 or len(path) < 3:
+        return path.astype(float)
+    pf = path.astype(float)
+    sm = pf.copy()
+    sm[:, 0] = gaussian_filter1d(pf[:, 0], sigma=sigma, mode='nearest')
+    sm[:, 1] = gaussian_filter1d(pf[:, 1], sigma=sigma, mode='nearest')
+    sm[0] = pf[0]
+    sm[-1] = pf[-1]
+    return sm
+
+
+def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, return_skeleton=False, return_straight_line=False, return_extensions=False, mask_eye=None, return_eye_info=False, length_smoothing_sigma=2.0):
     """
     Border-to-border, branch-free centerline length for a tube-like binary mask.
 
@@ -467,7 +491,11 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
     return_extensions: return boolean array indicating which path points are extensions
     mask_eye: optional 2D binary eye mask; if provided, used only to orient the path so it starts at the head end (nearer the eye)
     return_eye_info: return eye-derived diagnostics computed inside this function
-    
+    length_smoothing_sigma: Gaussian sigma (in pixels) applied to the path before summing
+        segment lengths, to remove pixel-grid staircase noise that otherwise inflates
+        length by a few percent even for a straight fish. Endpoints are pinned exactly,
+        so straight_length is unaffected. 0/None disables smoothing (raw pixel path).
+
     Returns:
         length: total path length along centerline
         straight_length: longest straight-line distance between any two border points
@@ -800,7 +828,7 @@ def tube_length_border2border(mask, spacing=(1.0, 1.0), return_path=False, retur
 
     # --- compute physical length along the (branch-free) path ---
     dy, dx = spacing
-    pf = path.astype(float)
+    pf = _smooth_path_pinned(path, length_smoothing_sigma)
     dxy = np.diff(pf, axis=0)
     seg = np.sqrt((dxy[:, 0] * dy) ** 2 + (dxy[:, 1] * dx) ** 2)
     length = float(seg.sum())
