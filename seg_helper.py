@@ -3,6 +3,7 @@ from PIL import Image
 import torch
 import numpy as np
 import cv2
+from scipy.ndimage import distance_transform_edt
 
 def load_images_from_path(path):
     """
@@ -106,6 +107,57 @@ def fill_holes(mask):
     filled_mask = mask | flood_filled_inv
     
     return (filled_mask * 255).astype(np.uint8)
+
+def adjust_mask_boundary(mask, offset_px, supersample=3):
+    """
+    Shift a binary mask's boundary outward (offset_px > 0, grow) or inward
+    (offset_px < 0, shrink) by a sub-pixel amount, to correct a measured
+    systematic bias between the model's 0.5-probability boundary and the
+    true anatomical edge in the photo.
+
+    A distance transform on the mask *as given* can't move a boundary by
+    less than 1 full pixel -- distance_transform_edt of a binary array is
+    itself grid-quantized, so every foreground pixel bordering the
+    background already has distance >= 1.0, and any offset_px with
+    |offset_px| < 1 would remove/add nothing at all. To get genuine
+    sub-pixel precision, the mask is first upsampled (nearest-neighbor, so
+    its shape doesn't change) by `supersample`, distance-thresholded on that
+    finer grid, then downsampled back via area-averaging + a 0.5 threshold
+    (equivalent to asking "is more than half of this original pixel now
+    covered?").
+
+    See local_testing/mask_edge_bias_test.py for how offset_px is measured:
+    cast rays from the mask centroid at many angles and compare where the
+    mask boundary falls vs. where image intensity crosses halfway between
+    the structure and background levels, averaged over many images/angles.
+
+    supersample=3 (~0.33px resolution) gives pixel-identical output to
+    supersample=8 in testing while running ~12x faster -- distance_transform_edt
+    on the upsampled mask dominates the cost and scales with supersample**2,
+    so this matters: ~450ms/image at 1024px target size with supersample=8,
+    vs ~15-85ms across 256/512/1024px with supersample=3. There's no accuracy
+    to gain from finer sampling anyway: the measured offset_px values
+    themselves carry ~0.26-0.28px of statistical uncertainty (see the
+    mask_edge_bias_test.py SEM figures), well above 1/3 px.
+    """
+    mask_bool = mask > 0
+    if offset_px == 0 or not mask_bool.any():
+        return mask_bool.astype(np.uint8) * 255
+
+    h, w = mask_bool.shape
+    big = cv2.resize(mask_bool.astype(np.uint8), (w * supersample, h * supersample),
+                      interpolation=cv2.INTER_NEAREST) > 0
+    offset_super = offset_px * supersample
+    if offset_px > 0:
+        dist_outside = distance_transform_edt(~big)
+        adjusted_big = (big | (dist_outside <= offset_super)).astype(np.float32)
+    else:
+        dist_inside = distance_transform_edt(big)
+        adjusted_big = (dist_inside > (-offset_super)).astype(np.float32)
+
+    coverage = cv2.resize(adjusted_big, (w, h), interpolation=cv2.INTER_AREA)
+    return (coverage >= 0.5).astype(np.uint8) * 255
+
 
 def grow_mask(mask, iterations=3, kernel_size=3):
     """

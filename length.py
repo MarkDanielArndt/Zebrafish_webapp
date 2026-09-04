@@ -208,6 +208,18 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
         height_val = float(along.max() - along.min())
         width_val  = float(across.max() - across.min())
 
+        # Center the drawn lines on the middle of the along/across extent box,
+        # not the mask's raw pixel centroid -- for an asymmetric/skewed blob
+        # those aren't the same point, and centering on the centroid made the
+        # line run past the mask boundary on one side while falling short on
+        # the other (see local_testing/mask_edge_bias_test.py's neighbor bug
+        # report against the swim-bladder width line).
+        along_mid = (along.max() + along.min()) / 2.0
+        across_mid = (across.max() + across.min()) / 2.0
+        cx_phys = along_mid * cos_a - across_mid * sin_a
+        cy_phys = along_mid * sin_a + across_mid * cos_a
+        cy_px, cx_px = cy_phys / dy, cx_phys / dx
+
         along_dir_phys  = (sin_a, cos_a)
         across_dir_phys = (cos_a, -sin_a)
 
@@ -301,7 +313,15 @@ def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):
         length_val = float(along.max() - along.min())
         width_val  = float(across.max() - across.min())
 
-        cy_px, cx_px = float(ys.mean()), float(xs.mean())
+        # Center the drawn lines on the middle of the along/across extent box,
+        # not the mask's raw pixel centroid -- see the matching comment in
+        # compute_eye_diameters above.
+        along_mid = (along.max() + along.min()) / 2.0
+        across_mid = (across.max() + across.min()) / 2.0
+        cx_phys = along_mid * cos_a - across_mid * sin_a
+        cy_phys = along_mid * sin_a + across_mid * cos_a
+        cy_px, cx_px = cy_phys / dy, cx_phys / dx
+
         along_dir_phys  = (sin_a, cos_a)
         across_dir_phys = (cos_a, -sin_a)
 

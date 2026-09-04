@@ -1,4 +1,4 @@
-from seg_helper import load_images_from_path, segment_fish, fill_holes, grow_mask
+from seg_helper import load_images_from_path, segment_fish, fill_holes, grow_mask, adjust_mask_boundary
 import os
 import cv2
 import numpy as np
@@ -9,6 +9,13 @@ from huggingface_hub import hf_hub_download
 _UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name, model_type)
 
 _MODEL_TYPES = {"Unet": Unet, "FPN": FPN, "Segformer": Segformer}
+
+# Measured systematic bias between the swim-bladder model's raw 0.5-probability
+# mask boundary and the true anatomical edge (mask consistently over-inclusive
+# by ~0.71-0.76px, at both 256px and 512px target sizes, >2.5 sigma significant
+# -- see local_testing/mask_edge_bias_test.py). The eye model's mask showed no
+# consistent bias across both resolutions, so it is left uncorrected.
+_SWIMBLADDER_BOUNDARY_OFFSET_PX = -0.73
 
 def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model", revision="main", force_download=False, encoder_name="vgg16", model_type="Unet"):
     """
@@ -218,7 +225,8 @@ def segmentation_pipeline(
         if include_swimbladder:
             if swimbladder_model is not None:
                 segmented_swimbladder, _ = segment_fish(input_image, swimbladder_model, biggest_only=True)
-                segmented_swimbladder_array = np.array(segmented_swimbladder)
+                segmented_swimbladder_array = adjust_mask_boundary(
+                    np.array(segmented_swimbladder), _SWIMBLADDER_BOUNDARY_OFFSET_PX)
             else:
                 segmented_swimbladder_array = np.zeros((target_size[0], target_size[1]), dtype=np.uint8)
             swimbladder_images.append(segmented_swimbladder_array)
