@@ -242,6 +242,88 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
         out["eye_height_line"] = ((float(ys.min()), cx_px), (float(ys.max()), cx_px))
     return out
 
+# A tube-shaped structure (e.g. swim bladder) with its own along/across
+# extent ratio at or above this is "flat" enough that its width should be
+# measured perpendicular to its OWN axis rather than the fish's body axis
+# -- see compute_tube_metrics. Calibrated against real data: max elongation
+# across all 29 CTL/Dark background swim bladders is 2.33 (all "round"),
+# min elongation across all 30 15 gy/Dark Background ones is 2.51 (all
+# "flat") -- 2.4 sits in that gap, just above the CTL max.
+_FLAT_ELONGATION_THRESHOLD = 2.4
+
+
+def _pca_angle_and_elongation(mask_bool, dy, dx):
+    """
+    Fit the mask's own principal axis (PCA over its physical-unit pixel
+    coordinates) and return (angle, elongation), where elongation is the
+    mask's own along/across extent ratio in that frame -- a flat/elongated
+    tube-like blob has elongation >> 1, a roundish one is close to 1.
+    Returns (None, 0.0) for an empty mask.
+    """
+    ys, xs = np.where(mask_bool)
+    if len(ys) == 0:
+        return None, 0.0
+    y_phys, x_phys = ys.astype(float) * dy, xs.astype(float) * dx
+    yc, xc = y_phys - y_phys.mean(), x_phys - x_phys.mean()
+    if len(ys) < 2:
+        return None, 0.0
+    cov = np.cov(np.vstack([yc, xc]))
+    eigvals, eigvecs = np.linalg.eigh(cov)
+    principal = eigvecs[:, int(np.argmax(eigvals))]
+    angle = float(np.arctan2(principal[0], principal[1]))
+    cos_a, sin_a = np.cos(angle), np.sin(angle)
+    along = x_phys * cos_a + y_phys * sin_a
+    across = -x_phys * sin_a + y_phys * cos_a
+    own_length = along.max() - along.min()
+    own_width = across.max() - across.min()
+    elongation = own_length / own_width if own_width > 1e-9 else float("inf")
+    return angle, elongation
+
+
+def _fish_axis_local_width(mask_bool, cos_a, sin_a):
+    """
+    Measure a tube-shaped mask's cross-sectional width perpendicular to a
+    given axis (cos_a, sin_a) -- either the fish's own body axis (matching
+    how eye width/height is measured, used when the structure is roundish)
+    or the mask's own principal axis (used when the structure is flat/
+    elongated enough that the fish axis wouldn't cut across it sensibly) --
+    see the elongation check in compute_tube_metrics.
+
+    Unlike a global along/across max-min extent (which can run outside a
+    curved/non-convex mask, e.g. through a crescent's concave "bite" -- see
+    local_testing/sickle_blank.png), this takes the cross-section at the
+    along-position of the mask's own pixel centroid and measures the extent
+    of the REAL mask pixels found there, so both the width value and the
+    line endpoints are guaranteed to be actual mask pixels.
+
+    Returns (width_val_px, p1, p2) in pixel (row, col) coords, or
+    (0.0, None, None) if the mask is empty.
+    """
+    ys, xs = np.where(mask_bool)
+    if len(ys) == 0:
+        return 0.0, None, None
+    along = xs * cos_a + ys * sin_a
+    across = -xs * sin_a + ys * cos_a
+    along_center = along.mean()
+
+    # Thin slice of real pixels near the centroid's along-position, widened
+    # until it contains at least 2 pixels (degenerate/very thin masks).
+    tol = 0.75
+    sel = np.abs(along - along_center) <= tol
+    while sel.sum() < 2:
+        tol *= 1.5
+        sel = np.abs(along - along_center) <= tol
+
+    across_sel = across[sel]
+    ys_sel, xs_sel = ys[sel], xs[sel]
+    idx_min = int(np.argmin(across_sel))
+    idx_max = int(np.argmax(across_sel))
+    p1 = (float(ys_sel[idx_min]), float(xs_sel[idx_min]))
+    p2 = (float(ys_sel[idx_max]), float(xs_sel[idx_max]))
+    width_val_px = float(across_sel.max() - across_sel.min())
+    return width_val_px, p1, p2
+
+
 def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):
     """
     Measure a tube-shaped structure's long-axis length and cross-axis width.
@@ -311,9 +393,8 @@ def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):
         along  = x_phys * cos_a + y_phys * sin_a
         across = -x_phys * sin_a + y_phys * cos_a
         length_val = float(along.max() - along.min())
-        width_val  = float(across.max() - across.min())
 
-        # Center the drawn lines on the middle of the along/across extent box,
+        # Center the length line on the middle of the along/across extent box,
         # not the mask's raw pixel centroid -- see the matching comment in
         # compute_eye_diameters above.
         along_mid = (along.max() + along.min()) / 2.0
@@ -322,18 +403,37 @@ def compute_tube_metrics(mask, spacing=(1.0, 1.0), mask_fish=None):
         cy_phys = along_mid * sin_a + across_mid * cos_a
         cy_px, cx_px = cy_phys / dy, cx_phys / dx
 
-        along_dir_phys  = (sin_a, cos_a)
-        across_dir_phys = (cos_a, -sin_a)
+        along_dir_phys = (sin_a, cos_a)
 
         def _half_line(direction_phys, half_len_phys):
             return direction_phys[0] * half_len_phys / dy, direction_phys[1] * half_len_phys / dx
 
         dl_row, dl_col = _half_line(along_dir_phys, length_val / 2.0)
-        dw_row, dw_col = _half_line(across_dir_phys, width_val / 2.0)
-
-        out["length"], out["width"] = length_val, width_val
+        out["length"] = length_val
         out["length_line"] = ((cy_px - dl_row, cx_px - dl_col), (cy_px + dl_row, cx_px + dl_col))
-        out["width_line"] = ((cy_px - dw_row, cx_px - dw_col), (cy_px + dw_row, cx_px + dw_col))
+
+        # Width: perpendicular to the fish's body axis for a roundish
+        # structure (matching eye width/height); perpendicular to the
+        # structure's OWN axis instead when the structure itself (not the
+        # fish) is flat/elongated enough that the fish axis wouldn't cut
+        # across it sensibly. Either way, measured on the real mask pixels at
+        # the centroid's along-position -- see _fish_axis_local_width.
+        own_angle, elongation = _pca_angle_and_elongation(m > 0, dy, dx)
+        if own_angle is not None and elongation >= _FLAT_ELONGATION_THRESHOLD:
+            width_cos_a, width_sin_a = np.cos(own_angle), np.sin(own_angle)
+        else:
+            width_cos_a, width_sin_a = cos_a, sin_a
+        width_val_px, p1, p2 = _fish_axis_local_width(m > 0, width_cos_a, width_sin_a)
+        if p1 is not None:
+            width_val = float(np.sqrt(((p1[0] - p2[0]) * dy) ** 2 + ((p1[1] - p2[1]) * dx) ** 2))
+            out["width"] = width_val
+            out["width_line"] = (p1, p2)
+        else:
+            across_dir_phys = (cos_a, -sin_a)
+            width_val = float(across.max() - across.min())
+            dw_row, dw_col = _half_line(across_dir_phys, width_val / 2.0)
+            out["width"] = width_val
+            out["width_line"] = ((cy_px - dw_row, cx_px - dw_col), (cy_px + dw_row, cx_px + dw_col))
         return out
 
     contours, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
