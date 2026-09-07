@@ -21,7 +21,7 @@ import torch.nn.functional as F
 import torchvision.transforms as T
 from huggingface_hub import hf_hub_download
 
-def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0)):
+def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0), area_shrink_frac=0.0):
     """
     Compute eye mask, centroid, physical area, and physical diameter from an eye mask.
 
@@ -29,6 +29,12 @@ def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0)):
         mask_eye: 2D eye mask/probability map.
         mask_fish: optional 2D fish mask to constrain eye pixels to fish body.
         spacing: (dy, dx) physical spacing per pixel.
+        area_shrink_frac: fraction to shrink eye_area by (e.g. 0.05 removes 5%
+            of the area; centroid/diameter still use the full mask). A full
+            1-pixel morphological erosion overshoots this correction (it
+            removes ~15-20% of a typical eye mask, scaling with eye size), so
+            callers reporting eye size apply a fixed fractional correction
+            instead of eroding the mask.
 
     Returns:
         dict with keys:
@@ -98,7 +104,8 @@ def compute_eye_metrics(mask_eye, mask_fish=None, spacing=(1.0, 1.0)):
 
     eye_centroid = ecoords.mean(axis=0)
     dy, dx = spacing
-    eye_area = float(len(ecoords) * dy * dx)
+
+    eye_area = float(len(ecoords) * dy * dx) * (1.0 - area_shrink_frac)
 
     eye_boundary = eye_mask & ~binary_erosion(eye_mask)
     dcoords = np.argwhere(eye_boundary)

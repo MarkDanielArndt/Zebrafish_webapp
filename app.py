@@ -977,6 +977,7 @@ def process(folder,
                             eye_mask_for_metrics,
                             mask_fish=seg_mask_bin,
                             spacing=(y_scale, x_scale),
+                            area_shrink_frac=0.05,
                         )
                         eye_areas.append(float(eye_info.get("eye_area", 0.0)))
                         dia = compute_eye_diameters(eye_mask_for_metrics, spacing=(y_scale, x_scale), mask_fish=seg_mask_bin)
@@ -1787,7 +1788,7 @@ def _apply_mask_edit(editor_data, edit_idx, mask_type, data):
     if mask_type == 'Eye' and eye_mask is not None:
         try:
             eye_bin = eye_mask > 0
-            eye_info = compute_eye_metrics(eye_bin, mask_fish=seg_bin, spacing=spacing)
+            eye_info = compute_eye_metrics(eye_bin, mask_fish=seg_bin, spacing=spacing, area_shrink_frac=0.05)
             if edit_idx < len(data.get('eye_areas', [])):
                 data['eye_areas'][edit_idx] = float(eye_info.get('eye_area', 0.0))
             dia = compute_eye_diameters(eye_bin, spacing=spacing, mask_fish=seg_bin)
