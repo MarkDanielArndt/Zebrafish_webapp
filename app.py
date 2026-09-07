@@ -59,7 +59,7 @@ SEG_MODEL_OPTIONS = {
     "Fine-tuned DESY": {
         "target_size": 512,
         "body": ("desy_body_512_finetuned.pth", "vgg19", "Unet"),
-        "eye": ("desy_eye_512_finetuned.pth", "vgg16", "Unet"),
+        "eye": ("best_model_eye_512_unet_resnet34.pth", "resnet34", "Unet"),
         "edema": ("desy_edema_512_finetuned.pth", "vgg19", "Unet"),
         "swimbladder": ("desy_swimmbladder_512_finetuned.pth", "vgg19", "FPN"),
     },
