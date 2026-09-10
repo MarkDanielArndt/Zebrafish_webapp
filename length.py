@@ -159,7 +159,7 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
     Without mask_fish, falls back to plain image-axis width/height.
 
     spacing = (dy, dx) — physical units (µm) per pixel.
-    Returns {'eye_width_um': cross-body-axis extent, 'eye_height_um': along-body-axis extent,
+    Returns {'eye_width_um': along-body-axis extent (parallel to the fish), 'eye_height_um': cross-body-axis extent (perpendicular to the fish),
              'eye_width_line': ((r1,c1),(r2,c2)) or None, 'eye_height_line': ((r1,c1),(r2,c2)) or None}.
     """
     out = {"eye_width_um": 0.0, "eye_height_um": 0.0, "eye_width_line": None, "eye_height_line": None}
@@ -212,8 +212,8 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
         # head-tail axis, "across" is perpendicular to it.
         along  = x_phys * cos_a + y_phys * sin_a
         across = -x_phys * sin_a + y_phys * cos_a
-        height_val = float(along.max() - along.min())
-        width_val  = float(across.max() - across.min())
+        width_val  = float(along.max() - along.min())
+        height_val = float(across.max() - across.min())
 
         # Center the drawn lines on the middle of the along/across extent box,
         # not the mask's raw pixel centroid -- for an asymmetric/skewed blob
@@ -233,13 +233,13 @@ def compute_eye_diameters(mask_eye, spacing=(1.0, 1.0), mask_fish=None):
         def _half_line(direction_phys, half_len_phys):
             return direction_phys[0] * half_len_phys / dy, direction_phys[1] * half_len_phys / dx
 
-        dh_row, dh_col = _half_line(along_dir_phys, height_val / 2.0)
-        dw_row, dw_col = _half_line(across_dir_phys, width_val / 2.0)
+        dw_row, dw_col = _half_line(along_dir_phys, width_val / 2.0)
+        dh_row, dh_col = _half_line(across_dir_phys, height_val / 2.0)
 
-        out["eye_height_um"] = height_val
         out["eye_width_um"]  = width_val
-        out["eye_height_line"] = ((cy_px - dh_row, cx_px - dh_col), (cy_px + dh_row, cx_px + dh_col))
+        out["eye_height_um"] = height_val
         out["eye_width_line"]  = ((cy_px - dw_row, cx_px - dw_col), (cy_px + dw_row, cx_px + dw_col))
+        out["eye_height_line"] = ((cy_px - dh_row, cx_px - dh_col), (cy_px + dh_row, cx_px + dh_col))
     else:
         width_px  = int(xs.max() - xs.min() + 1)
         height_px = int(ys.max() - ys.min() + 1)
