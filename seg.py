@@ -6,6 +6,8 @@ import torch
 from segmentation_models_pytorch import Unet, FPN, Segformer
 from huggingface_hub import hf_hub_download
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 _UNET_CACHE = {}  # lazy-loaded cache keyed by (filename_or_path, encoder_name, model_type)
 
 _MODEL_TYPES = {"Unet": Unet, "FPN": FPN, "Segformer": Segformer}
@@ -28,7 +30,10 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
         return _UNET_CACHE[cache_key]
 
     model_cls = _MODEL_TYPES[model_type]
-    model = model_cls(encoder_name=encoder_name, encoder_weights="imagenet", in_channels=3, classes=1)
+    # encoder_weights=None: the fine-tuned checkpoint loaded below (strict=True) overwrites
+    # every encoder weight anyway, so downloading/loading ImageNet-pretrained weights first
+    # is pure waste -- was pulling hundreds of MB per encoder from Hugging Face Hub for nothing.
+    model = model_cls(encoder_name=encoder_name, encoder_weights=None, in_channels=3, classes=1)
     resolved_path = None
 
     if model_path and os.path.exists(model_path):
@@ -52,9 +57,10 @@ def _load_unet_model(model_path=None, repo_id=None, filename=None, label="model"
         return None
 
     try:
-        model.load_state_dict(torch.load(resolved_path, map_location=torch.device('cpu')))
+        model.load_state_dict(torch.load(resolved_path, map_location=device))
         model.eval()
-        print(f"{label.capitalize()} loaded from {resolved_path}")
+        model = model.to(device)
+        print(f"{label.capitalize()} loaded from {resolved_path} (device={device})")
         _UNET_CACHE[cache_key] = model
         return model
     except Exception as exc:
@@ -198,7 +204,7 @@ def segmentation_pipeline(
         img = cv2.resize(img, cv2_size, interpolation=cv2.INTER_LINEAR)
 
         processed_image = (img / 255.0 - mean) / std
-        input_image = torch.tensor(processed_image, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+        input_image = torch.tensor(processed_image, dtype=torch.float32).permute(2, 0, 1).unsqueeze(0).to(device)
 
         segmented_mask, confidence_map = segment_fish(input_image, loaded_model)
         segmented_mask_array = np.array(segmented_mask)
