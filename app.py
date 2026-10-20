@@ -1,8 +1,8 @@
 import gradio as gr
 import tempfile, os, shutil
 from typing import List, Optional, Tuple
-from seg import segmentation_pipeline
-from length import load_model, classification_curvature, tube_length_border2border, compute_eye_metrics, compute_eye_diameters, compute_tube_metrics
+from zebrafish_measure import segmentation_pipeline
+from zebrafish_measure import load_model, classification_curvature, tube_length_border2border, compute_eye_metrics, compute_eye_diameters, compute_tube_metrics
 import openpyxl, io
 from openpyxl.drawing.image import Image as ExcelImage
 import matplotlib.pyplot as plt
@@ -20,9 +20,9 @@ except Exception:
     _HAS_TORCH = False
 
 try:
-    from scalebar import (detect_scalebar as _detect_scalebar,
-                          draw_scalebar_endpoints as _draw_scalebar_endpoints,
-                          calibrate_from_endpoints as _calibrate_from_endpoints)
+    from zebrafish_measure import (detect_scalebar as _detect_scalebar,
+                                   draw_scalebar_endpoints as _draw_scalebar_endpoints,
+                                   calibrate_from_endpoints as _calibrate_from_endpoints)
     _HAS_SCALEBAR = True
 except Exception:
     _HAS_SCALEBAR = False

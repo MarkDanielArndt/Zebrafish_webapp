@@ -9,3 +9,9 @@ local_testing/
 # Standalone pipeline-visualization video generator (not part of the app)
 pipeline_visualization_video.py
 pipeline_visualization_output.mp4
+# legacy local copies of the core modules, replaced by the zebrafish-measure package
+# (kept on disk only for the gitignored local_testing scripts)
+/length.py
+/seg.py
+/seg_helper.py
+/scalebar.py
