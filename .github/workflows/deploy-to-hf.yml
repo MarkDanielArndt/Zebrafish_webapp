@@ -31,7 +31,7 @@ jobs:
 
       - name: Sync files into Space repo
         run: |
-          rsync -av --delete \
+          rsync -avc --delete \
             --exclude "space_repo/" \
             --exclude ".git" \
             --exclude ".github" \
