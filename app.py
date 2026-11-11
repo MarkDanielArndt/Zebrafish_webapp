@@ -33,7 +33,7 @@ MODEL_CACHE = {}  # lazy-loaded cache keyed by model filename
 # Each entry: display name -> {target_size, body/eye/edema/swimbladder: (hf_filename, encoder_name, model_type)}
 # None for eye/edema/swimbladder means "use the pipeline default" (the 256px SegFormer models).
 # Body/eye/edema/swimbladder are all SegFormer (mit_b3) transformer models trained by
-# Transformer_Segmentation_train.py, except the Fine-tuned DESY preset, which is untouched.
+# Transformer_Segmentation_train.py, except the Fine-tuned DESY preset, which is untouched except for its edema model (Unet resnet34).
 SEG_MODEL_OPTIONS = {
     "Fast & Easy (256 px, ~2s/image)": {
         "target_size": 256,
@@ -60,7 +60,7 @@ SEG_MODEL_OPTIONS = {
         "target_size": 512,
         "body": ("desy_body_512_finetuned.pth", "vgg19", "Unet"),
         "eye": ("best_model_eye_512_unet_resnet34.pth", "resnet34", "Unet"),
-        "edema": ("desy_edema_512_finetuned.pth", "vgg19", "Unet"),
+        "edema": ("best_model_edema_512_unet_resnet34.pth", "resnet34", "Unet"),
         "swimbladder": ("desy_swimmbladder_512_finetuned.pth", "vgg19", "FPN"),
     },
 }
